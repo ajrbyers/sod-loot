@@ -70,6 +70,7 @@ CACHES = {
 API_CACHE_SECONDS = int(os.environ.get("API_CACHE_SECONDS", str(3 * 60 * 60)))
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 USE_TZ = True
 TIME_ZONE = "UTC"

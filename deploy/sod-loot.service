@@ -1,0 +1,17 @@
+[Unit]
+Description=SoD Loot Checker (gunicorn)
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/sod-loot
+RuntimeDirectory=sod-loot
+# gunicorn binds a unix socket in /run/sod-loot/ (created by RuntimeDirectory).
+ExecStart=/opt/sod-loot/.venv/bin/gunicorn sodloot.wsgi:application \
+    --workers 3 --timeout 60 --bind unix:/run/sod-loot/gunicorn.sock
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
