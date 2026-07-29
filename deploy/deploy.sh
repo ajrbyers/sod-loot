@@ -39,9 +39,15 @@ systemctl daemon-reload
 systemctl enable "$SVC"
 systemctl restart "$SVC"
 
-echo ">> nginx site (review default_server conflicts — see the .conf header)"
-cp deploy/nginx-sod-loot.conf /etc/nginx/sites-available/${SVC}
-ln -sf /etc/nginx/sites-available/${SVC} /etc/nginx/sites-enabled/${SVC}
+echo ">> nginx site"
+if [ ! -f /etc/nginx/sites-available/${SVC} ]; then
+    cp deploy/nginx-sod-loot.conf /etc/nginx/sites-available/${SVC}
+    ln -sf /etc/nginx/sites-available/${SVC} /etc/nginx/sites-enabled/${SVC}
+else
+    # Left in place so certbot's HTTPS edits survive re-deploys. To reset it,
+    # rm the file and re-run.
+    echo "   nginx site already exists — leaving it untouched (preserves SSL config)."
+fi
 nginx -t
 systemctl reload nginx
 
