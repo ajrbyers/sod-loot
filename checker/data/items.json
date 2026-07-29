@@ -1,0 +1,59 @@
+{
+  "_comment": "Edit this file to maintain the loot catalogue. Any item with requires_parse=true is a 'rare item' from the loot rules and needs the 75% best-average parse to SR/roll. Everything not listed here falls under standard SR > MS > OS rules and needs no parse. The 8 rare items below come straight from the loot-rules doc.",
+  "items": [
+    {
+      "name": "Abandoned Experiment",
+      "raid": "Naxxramas / Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Sir Dornel's Didgeridoo",
+      "raid": "Naxxramas / Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Queensfall",
+      "raid": "Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Mirage",
+      "raid": "Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Infusion of Souls",
+      "raid": "Naxxramas / Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Putress' Diary",
+      "raid": "Naxxramas / Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Mason's Fraternity Ring",
+      "raid": "Naxxramas / Scarlet Enclave",
+      "requires_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+    },
+    {
+      "name": "Might of the Scourge",
+      "raid": "Naxxramas (Sapphiron)",
+      "requires_parse": true,
+      "note": "Sapphiron shoulder enchant. Rare item — 75%+ best average + 4/8 weeks attendance required. Shoulders are exempt from the 'fully enchanted' requirement."
+    },
+    {
+      "name": "Power of the Scourge",
+      "raid": "Naxxramas (Sapphiron)",
+      "requires_parse": true,
+      "note": "Sapphiron shoulder enchant. Rare item — 75%+ best average + 4/8 weeks attendance required. Shoulders are exempt from the 'fully enchanted' requirement."
+    }
+  ]
+}

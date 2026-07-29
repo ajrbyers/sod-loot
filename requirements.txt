@@ -1,0 +1,6 @@
+Django>=4.2,<5.3
+# The Warcraft Logs client uses only the Python standard library (urllib),
+# so no extra HTTP dependency is required.
+
+# For production hosting:
+gunicorn>=21

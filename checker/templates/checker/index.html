@@ -1,0 +1,528 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoD Loot Eligibility Checker · Guild {{ guild_id }}</title>
+<style>
+  :root {
+    --bg: #0f1216; --bg2: #1a2028; --panel: #171b21; --panel2: #1e242c; --border: #2a323d;
+    --text: #e6e1d3; --muted: #9aa4b0; --gold: #d4af37; --gold2: #f0d67a;
+    --green: #4caf6d; --red: #e05656; --amber: #e0a94c; --blue: #5b8fd6;
+    --shadow: rgba(0,0,0,.35); --h1shadow: #000; --heading: var(--gold2);
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f5; --bg2: #ffffff; --panel: #ffffff; --panel2: #f1f4f8; --border: #dde2ea;
+    --text: #1f2733; --muted: #647085; --gold: #b07a0a; --gold2: #955f00;
+    --green: #12824c; --red: #c02a2a; --amber: #b06a0c; --blue: #2461ab;
+    --shadow: rgba(30,45,70,.10); --h1shadow: transparent; --heading: #1c2430;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 50% -200px, var(--bg2), var(--bg));
+    color: var(--text); font: 15px/1.5 "Segoe UI", system-ui, sans-serif; min-height: 100vh;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }
+  header { text-align: center; margin-bottom: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: var(--heading);
+       letter-spacing: .5px; text-shadow: 0 1px 0 var(--h1shadow); }
+  header p { color: var(--muted); margin: 0; font-size: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 22px; margin-bottom: 22px; box-shadow: 0 8px 30px var(--shadow);
+  }
+  .card h2 { margin: 0 0 4px; font-size: 18px; color: var(--gold); }
+  .card .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+  input[type=text] {
+    width: 100%; padding: 11px 12px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; font-size: 15px;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--gold); }
+  textarea {
+    width: 100%; padding: 11px 12px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; font-size: 15px;
+    min-height: 84px; resize: vertical; font-family: inherit;
+  }
+  button {
+    margin-top: 16px; background: linear-gradient(180deg, var(--gold2), var(--gold));
+    color: #241c00; border: none; border-radius: 8px; padding: 11px 20px;
+    font-weight: 700; font-size: 15px; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .result { margin-top: 20px; }
+  .verdict {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 10px;
+    font-weight: 700; font-size: 16px; margin-bottom: 14px;
+  }
+  .verdict.pass { background: color-mix(in srgb, var(--green) 14%, transparent); border: 1px solid var(--green); color: var(--green); }
+  .verdict.fail { background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); color: var(--red); }
+  .verdict.warn { background: color-mix(in srgb, var(--amber) 14%, transparent); border: 1px solid var(--amber); color: var(--amber); }
+  .check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px;
+           background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 10px; }
+  .check .badge { font-weight: 700; padding: 2px 9px; border-radius: 20px; font-size: 12px; white-space: nowrap; }
+  .badge.ok { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+  .badge.no { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+  .badge.warn { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber); }
+  .radios { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+  .radio { flex: 1 1 200px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+           background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px; }
+  .radio:has(input:checked) { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 12%, transparent); }
+  .radio input { accent-color: var(--gold); width: 16px; height: 16px; }
+  .radio span { display: flex; flex-direction: column; line-height: 1.25; }
+  .radio small { color: var(--muted); font-size: 12px; }
+  .slots { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
+  .slotrow { display: flex; justify-content: space-between; gap: 8px; font-size: 13px;
+             border-bottom: 1px solid var(--border); padding: 3px 0; }
+  .slotrow .sname { color: var(--muted); }
+  .sench.good { color: var(--green); } .sench.bad { color: var(--red); font-weight: 700; }
+  .cacheline { display: flex; align-items: center; justify-content: space-between;
+               margin-top: 14px; color: var(--muted); font-size: 12px; }
+  button.small { margin-top: 0; padding: 5px 12px; font-size: 13px; }
+  .check .body { flex: 1; }
+  .check .body b { color: var(--text); }
+  .check .detail { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .bosses { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 6px; margin-top: 10px; }
+  .boss { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+          background: var(--panel2); border: 1px solid var(--border); border-radius: 7px;
+          padding: 6px 10px; }
+  .boss .bname { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .boss .bpct { font-weight: 800; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .weeks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .pill { background: color-mix(in srgb, var(--blue) 18%, var(--panel2)); color: var(--blue);
+          border: 1px solid color-mix(in srgb, var(--blue) 45%, transparent);
+          font-size: 12px; padding: 3px 9px; border-radius: 20px; }
+  .item-result { padding: 13px 15px; border-radius: 9px; margin-top: 10px;
+                 background: var(--panel2); border: 1px solid var(--border); }
+  .item-result.rare { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, transparent); }
+  .item-result .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+                      padding: 2px 8px; border-radius: 20px; font-weight: 700; }
+  .tag.rare { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold2); }
+  .tag.std { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); }
+  .item-result .name { font-size: 15px; font-weight: 700; }
+  .item-result .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .error { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); border: 1px solid var(--red);
+           padding: 12px 14px; border-radius: 9px; margin-top: 16px; }
+  .spin { color: var(--muted); font-size: 14px; margin-top: 16px; }
+  .rare-list { columns: 2; column-gap: 20px; font-size: 13px; color: var(--muted); margin: 6px 0 0; padding-left: 18px; }
+  .rare-list li { margin-bottom: 4px; break-inside: avoid; }
+  a { color: var(--gold2); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .num { color: var(--gold2); font-weight: 700; }
+  #themeToggle { position: fixed; top: 14px; right: 14px; z-index: 10;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 20px; padding: 7px 12px; font-size: 13px; cursor: pointer; margin: 0; }
+  #themeToggle:hover { border-color: var(--gold); }
+  /* Requirement checklist in item results */
+  .reqs { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+  .req { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .req .dot { width: 16px; text-align: center; }
+  .req.need { color: var(--text); } .req.na { color: var(--muted); }
+  .req.pass .dot { color: var(--green); } .req.fail .dot { color: var(--red); }
+</style>
+</head>
+<body>
+<button id="themeToggle" onclick="toggleTheme()">🌙 Dark</button>
+<div class="wrap">
+  <header>
+    <h1>⚔ SoD Loot Eligibility Checker</h1>
+    <p>Guild ID {{ guild_id }} · rare items need <span class="num">{{ parse_threshold }}%</span> best average
+       in <span class="num">{{ parse_zone_name }}</span>
+       and <span class="num">{{ weeks_required }}</span>+ raid weeks in the last {{ weeks_window }}</p>
+  </header>
+
+  <!-- Eligibility -->
+  <div class="card">
+    <h2>Am I eligible?</h2>
+    <p class="sub">Enter the toon you're enquiring about, plus any other characters you raid on
+       (attendance is counted across all of them).</p>
+
+    <label for="main">Toon you're enquiring about</label>
+    <input type="text" id="main" placeholder="e.g. Healrond" autocomplete="off">
+
+    <label for="toons">Your other toons (optional — one per line or comma-separated)</label>
+    <textarea id="toons" placeholder="Appa&#10;Clavigula"></textarea>
+
+    <label>Which raid?</label>
+    <div class="radios" id="raid">
+      <label class="radio"><input type="radio" name="raid" value="se" checked>
+        <span><b>Scarlet Enclave</b><small>need 6/6 SE tier</small></span></label>
+      <label class="radio"><input type="radio" name="raid" value="naxx">
+        <span><b>Naxxramas</b><small>need 6 tier (Naxx and/or SE)</small></span></label>
+    </div>
+
+    <label for="spec">WCL spec <span style="color:var(--muted)">(optional — e.g. <b>Holy</b> for a Shockadin's damage parse)</span></label>
+    <input type="text" id="spec" list="speclist" placeholder="leave blank for the character's best spec" autocomplete="off">
+    <datalist id="speclist">
+      <option value="Holy"><option value="Protection"><option value="Retribution">
+      <option value="Arms"><option value="Fury">
+      <option value="Balance"><option value="Feral"><option value="Guardian"><option value="Restoration">
+      <option value="Frost"><option value="Fire"><option value="Arcane">
+      <option value="Beast Mastery"><option value="Marksmanship"><option value="Survival">
+      <option value="Assassination"><option value="Combat"><option value="Subtlety">
+      <option value="Shadow"><option value="Discipline">
+      <option value="Elemental"><option value="Enhancement">
+      <option value="Affliction"><option value="Demonology"><option value="Destruction">
+    </datalist>
+
+    <label>Parse metric</label>
+    <div class="radios">
+      <label class="radio"><input type="radio" name="metric" value="dps" checked>
+        <span><b>DPS</b><small>damage parse</small></span></label>
+      <label class="radio"><input type="radio" name="metric" value="hps">
+        <span><b>HPS</b><small>healing parse</small></span></label>
+    </div>
+
+    <button id="checkBtn">Check eligibility</button>
+    <div id="eligOut" class="result"></div>
+  </div>
+
+  <!-- Item search -->
+  <div class="card">
+    <h2>Can I loot this item?</h2>
+    <p class="sub">Search a Naxx / Scarlet Enclave drop to see the <b>full</b> requirements to SR it.
+       Check a toon above first and this will tell you whether <b>they</b> qualify for the item.</p>
+    <label for="itemq">Item name</label>
+    <input type="text" id="itemq" placeholder="e.g. Queensfall" autocomplete="off">
+    <div id="itemOut" class="result"></div>
+
+    <details style="margin-top:18px">
+      <summary style="cursor:pointer;color:var(--muted)">The {{ rare_items|length }} rare items that require a parse</summary>
+      <ul class="rare-list">
+        {% for it in rare_items %}<li>{{ it.name }}</li>{% endfor %}
+      </ul>
+    </details>
+  </div>
+
+  <footer>
+    Verdicts follow the <a href="https://docs.google.com/document/d/1JuMnO4QfMjLDNtPWO0-iHN9khzqxWRxpuhktsD8UdXo/edit" target="_blank" rel="noopener">full loot rules</a>.
+    Loot council may still apply case by case.
+  </footer>
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+
+// --- Theme (light / dark) ---
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  const btn = document.getElementById("themeToggle");
+  if (btn) btn.textContent = t === "light" ? "☀ Light" : "🌙 Dark";
+  try { localStorage.setItem("sodTheme", t); } catch (e) {}
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "light" ? "dark" : "light");
+}
+(function initTheme() {
+  let t;
+  try { t = localStorage.getItem("sodTheme"); } catch (e) {}
+  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  applyTheme(t);
+})();
+
+function parseToons(text) {
+  return text.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+}
+
+const checkBtn = document.getElementById("checkBtn");
+const eligOut = document.getElementById("eligOut");
+
+checkBtn.addEventListener("click", () => runCheck(false));
+
+async function runCheck(force) {
+  const main = document.getElementById("main").value.trim();
+  const toons = parseToons(document.getElementById("toons").value);
+  const raid = (document.querySelector('input[name="raid"]:checked') || {}).value || "se";
+  const metric = (document.querySelector('input[name="metric"]:checked') || {}).value || "dps";
+  const spec = document.getElementById("spec").value.trim();
+  if (!main) { eligOut.innerHTML = '<div class="error">Enter the toon you\'re enquiring about.</div>'; return; }
+
+  checkBtn.disabled = true;
+  eligOut.innerHTML = `<div class="spin">${force ? "Refreshing from Warcraft Logs + armory…" : "Querying…"}</div>`;
+  try {
+    const res = await fetch("/api/eligibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+      body: JSON.stringify({ main, toons, raid, metric, spec, force }),
+    });
+    const data = await res.json();
+    if (!res.ok) { eligOut.innerHTML = `<div class="error">${data.error || "Something went wrong."}</div>`; return; }
+    window.lastElig = data;
+    eligOut.innerHTML = renderEligibility(data);
+    // Refresh any active item search so it re-evaluates against this toon.
+    const q = itemq.value.trim();
+    if (q) runItemSearch(q);
+  } catch (e) {
+    eligOut.innerHTML = `<div class="error">Network error: ${e.message}</div>`;
+  } finally {
+    checkBtn.disabled = false;
+  }
+}
+
+function renderEligibility(d) {
+  const p = d.parse, a = d.attendance;
+  let html = "";
+
+  const reasons = [];
+  if (!d.parse.passed) reasons.push(`parse under ${d.parse.threshold}%`);
+  if (!d.attendance.passed) reasons.push(`attendance under ${d.attendance.required} resets`);
+  if (d.enchants && d.enchants.verified && d.enchants.fully_enchanted === false)
+    reasons.push(`missing enchants (${d.enchants.missing.map(slotLabel).join(", ")})`);
+  if (d.gear && d.gear.available && d.set_bonus_ok === false)
+    reasons.push(`under tier set (${escape(d.gear.set_bonus.detail)})`);
+  const reasonTxt = reasons.length ? ` <div class="detail">Blocked by: ${escape(reasons.join(" · "))}.</div>` : "";
+
+  let overall, overallText;
+  if (d.rare_item_eligible) {
+    overall = "pass";
+    overallText = `✔ ${escape(d.enquiring_toon)} is eligible for RARE (parse-gated) items and all standard loot.`;
+  } else if (d.standard_item_eligible) {
+    overall = "warn";
+    overallText = `➖ ${escape(d.enquiring_toon)} can SR standard (non-token) loot, but not rare items.`;
+  } else if (d.token_eligible) {
+    overall = "warn";
+    overallText = `➖ ${escape(d.enquiring_toon)} can only SR tokens (${d.raid === "naxx" ? "Desecrated" : "Consecrated"} …) — not other items.`;
+  } else {
+    overall = "fail";
+    overallText = `✖ ${escape(d.enquiring_toon)} is not currently eligible.`;
+  }
+  html += `<div class="verdict ${overall}">${overallText}${reasonTxt}</div>`;
+
+  // Parse check
+  const pBadge = p.passed ? '<span class="badge ok">PASS</span>' : '<span class="badge no">FAIL</span>';
+  let pDetail;
+  if (!p.found) {
+    pDetail = `No Warcraft Logs character found for <b>${escape(d.enquiring_toon)}</b> on ${escape(d.guild.realm||"?")}-${escape((d.guild.region||"").toUpperCase())}. Check the spelling / realm.`;
+  } else if (p.best_average == null) {
+    pDetail = `Character found but has no ranked parses yet.`;
+  } else {
+    const both = [];
+    if (p.sizes) {
+      if (p.sizes["40"] != null) both.push(`40-man ${fmtPct(p.sizes["40"])}`);
+      if (p.sizes["20"] != null) both.push(`20-man ${fmtPct(p.sizes["20"])}`);
+    }
+    const bothTxt = both.length > 1 ? `<div class="detail">${both.join(" · ")}</div>` : "";
+    let extra = "";
+    if (p.top_parse && p.top_parse.percent != null) {
+      extra = ` · best single boss: ${escape(p.top_parse.encounter)} ${fmtPct(p.top_parse.percent)}`;
+    }
+    pDetail = `Best Perf. Average <b>${fmtPct(p.best_average)}</b> — ${p.size}-man (higher of the two), needs ${p.threshold}%.${extra}${bothTxt}`;
+  }
+  let bossHtml = "";
+  if (p.rankings && p.rankings.length) {
+    bossHtml = '<div class="bosses">' + p.rankings.map(r => {
+      const v = r.best_percent;
+      const shown = v == null ? "—" : v.toFixed(2);
+      return `<div class="boss"><span class="bname">${escape(r.encounter)}</span>
+        <span class="bpct" style="color:${parseColor(v)}">${shown}</span></div>`;
+    }).join("") + '</div>';
+  }
+  const specTxt = p.spec ? ` · ${escape(p.spec)}` : "";
+  const metricTxt = p.metric ? ` · ${escape((p.metric || "").toUpperCase())}` : "";
+  html += `<div class="check">${pBadge}<div class="body"><b>${p.threshold}% parse</b> · ${escape(p.zone || "Scarlet Enclave")}${specTxt}${metricTxt} (on ${escape(d.enquiring_toon)})<div class="detail">${pDetail}</div>${bossHtml}</div></div>`;
+
+  // Attendance check
+  const aBadge = a.passed ? '<span class="badge ok">PASS</span>' : '<span class="badge no">FAIL</span>';
+  let weeksHtml = "";
+  const keys = Object.keys(a.weeks || {});
+  if (keys.length) {
+    weeksHtml = '<div class="weeks">' + keys.map(k => `<span class="pill">${k}</span>`).join("") + '</div>';
+  }
+  const winTxt = a.window_start ? ` (since reset ${escape(a.window_start)})` : "";
+  html += `<div class="check">${aBadge}<div class="body"><b>Attendance</b> — raided <b>${a.distinct_weeks}</b> of last ${a.window_weeks} SoD resets${winTxt}, need ${a.required}<div class="detail">Wed→Wed lockouts · counted across: ${d.toons_checked.map(escape).join(", ")}</div>${weeksHtml}</div></div>`;
+
+  // Gear (current armory) — set-bonus + enchant WARNINGS
+  html += renderGear(d.gear, d.enquiring_toon);
+
+  // Cache status + refresh
+  html += renderCacheLine(d.cache);
+
+  return html;
+}
+
+function renderGear(g, toon) {
+  if (!g) return "";
+  const raidName = g.raid === "naxx" ? "Naxxramas" : "Scarlet Enclave";
+  if (!g.available) {
+    return `<div class="check"><span class="badge warn">?</span><div class="body"><b>Gear</b> — couldn't check<div class="detail">${escape(g.reason || "Unavailable.")}</div></div></div>`;
+  }
+  let html = "";
+
+  // Set-bonus — HARD gate for SR-ing any NON-TOKEN item (tokens always allowed)
+  const sb = g.set_bonus;
+  const sbBadge = sb.meets ? '<span class="badge ok">PASS</span>' : '<span class="badge no">FAIL</span>';
+  const setsTxt = (g.tier_sets || []).map(t =>
+    `${escape(t.name)} ${t.equipped} (${t.tier === "se" ? "SE" : "Naxx"})`).join(" · ") || "no tier pieces";
+  const sbNote = sb.meets
+    ? `Wearing ${escape(sb.detail)} for ${raidName}.`
+    : `Only ${escape(sb.detail)} for ${raidName} — <b>can only SR tokens (${g.raid === "naxx" ? "Desecrated" : "Consecrated"} …)</b>, not other items. If a Chalice token changed this, hit Refresh.`;
+  html += `<div class="check">${sbBadge}<div class="body"><b>Set bonus</b> (${raidName})<div class="detail">${sbNote}</div><div class="detail">${setsTxt}</div></div></div>`;
+
+  // Enchants — HARD gate for 75%+ rare items
+  const enBadge = g.fully_enchanted ? '<span class="badge ok">PASS</span>' : '<span class="badge no">FAIL</span>';
+  const missTxt = g.fully_enchanted
+    ? "All enchantable slots enchanted (shoulders excepted)."
+    : `Missing enchant on: <b>${g.missing_enchants.map(slotLabel).map(escape).join(", ")}</b> — <b>ineligible for rare (75%+) loot</b> until enchanted.`;
+  let slotHtml = "";
+  if (g.items && g.items.length) {
+    slotHtml = '<div class="slots">' + g.items.filter(i => i.enchantable || i.enchant).map(i => {
+      const ok = !!i.enchant;
+      return `<div class="slotrow"><span class="sname">${escape(slotLabel(i.slot))}</span>
+        <span class="sench ${ok ? 'good' : 'bad'}">${ok ? escape(i.enchant) : "— none —"}</span></div>`;
+    }).join("") + '</div>';
+  }
+  html += `<div class="check">${enBadge}<div class="body"><b>Enchants</b><div class="detail">${missTxt}</div>${slotHtml}</div></div>`;
+
+  return html;
+}
+
+function slotLabel(s) {
+  return (s || "").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function renderCacheLine(cache) {
+  if (!cache) return "";
+  let txt;
+  if (cache.cached) {
+    const m = Math.floor((cache.age_seconds || 0) / 60);
+    txt = m < 1 ? "cached just now" : `cached ${m} min ago`;
+  } else {
+    txt = "fresh from Warcraft Logs + armory";
+  }
+  return `<div class="cacheline"><span>${txt}</span>
+    <button class="ghost small" onclick="runCheck(true)">↻ Refresh</button></div>`;
+}
+
+// Item search (debounced)
+const itemq = document.getElementById("itemq");
+const itemOut = document.getElementById("itemOut");
+let itemTimer = null;
+itemq.addEventListener("input", () => {
+  clearTimeout(itemTimer);
+  const q = itemq.value.trim();
+  if (!q) { itemOut.innerHTML = ""; return; }
+  itemTimer = setTimeout(() => runItemSearch(q), 250);
+});
+
+async function runItemSearch(q) {
+  try {
+    const res = await fetch("/api/items?q=" + encodeURIComponent(q));
+    const d = await res.json();
+    itemOut.innerHTML = renderItems(d);
+  } catch (e) {
+    itemOut.innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+function renderItems(d) {
+  if (!d.item_type) return "";
+  const type = d.item_type;
+  const rare = (d.matches && d.matches.length) ? d.matches[0] : null;
+
+  let tag, cls, title, sub;
+  if (type === "rare") {
+    tag = '<span class="tag rare">Rare item</span>'; cls = "rare";
+    title = escape(rare.name);
+    sub = `${escape(rare.raid || "")} — needs the full rare-loot gate.`;
+  } else if (type === "token") {
+    tag = '<span class="tag std">Tier token</span>'; cls = "";
+    title = escape(d.query);
+    sub = `A ${d.token_raid === "naxx" ? "Naxxramas (Desecrated)" : "Scarlet Enclave (Consecrated)"} tier token — <b>always SR-able</b> by any raider, no set/parse/enchant needed.`;
+  } else {
+    tag = '<span class="tag std">Standard loot</span>'; cls = "";
+    title = `“${escape(d.query)}”`;
+    sub = `Standard (non-token) SR &gt; MS &gt; OS loot.`;
+  }
+
+  const reqHtml = renderReqs(d.requires, window.lastElig);
+  const verdict = itemVerdict(d.requires, window.lastElig);
+
+  return `<div class="item-result ${cls}">
+    ${tag}
+    <div class="name" style="margin-top:6px">${title}</div>
+    <div class="meta">${sub}</div>
+    ${reqHtml}
+    ${verdict}
+  </div>`;
+}
+
+// Requirement checklist. Evaluates against a checked toon (elig) when present.
+function renderReqs(req, elig) {
+  if (!req) return "";
+  const rows = [
+    ["attendance", "Attendance (4+ of 8 resets)"],
+    ["set_bonus", "Tier set bonus (6-piece)"],
+    ["parse", "75%+ best parse"],
+    ["enchants", "Fully enchanted"],
+  ];
+  let out = '<div class="reqs">';
+  for (const [k, label] of rows) {
+    const needed = !!req[k];
+    let cls = needed ? "need" : "na";
+    let dot = needed ? "•" : "–";
+    if (needed && elig) {
+      const st = reqStatus(k, elig);
+      if (st === true) { cls = "pass"; dot = "✔"; }
+      else if (st === false) { cls = "fail"; dot = "✘"; }
+      else { dot = "?"; }
+    }
+    out += `<div class="req ${cls}"><span class="dot">${dot}</span><span>${escape(label)}${needed ? "" : " — not required"}</span></div>`;
+  }
+  return out + "</div>";
+}
+
+// true=pass, false=fail, null=unknown (gear not verified)
+function reqStatus(k, e) {
+  if (k === "attendance") return !!e.attendance.passed;
+  if (k === "parse") return !!e.parse.passed;
+  if (k === "set_bonus") return (e.gear && e.gear.available) ? !!e.set_bonus_ok : null;
+  if (k === "enchants") return (e.enchants && e.enchants.verified) ? !!e.enchants.fully_enchanted : null;
+  return null;
+}
+
+function itemVerdict(req, elig) {
+  if (!req) return "";
+  if (!elig) {
+    return `<div class="meta" style="margin-top:8px">Check a toon above to see if they qualify.</div>`;
+  }
+  const needed = Object.keys(req).filter(k => req[k]);
+  const statuses = needed.map(k => reqStatus(k, elig));
+  const anyFail = statuses.some(s => s === false);
+  const anyUnknown = statuses.some(s => s === null);
+  const toon = escape(elig.enquiring_toon);
+  let cls, txt;
+  if (anyFail) { cls = "fail"; txt = `✖ ${toon} cannot SR this item.`; }
+  else if (anyUnknown) { cls = "warn"; txt = `➖ ${toon} meets the checkable gates, but gear couldn't be verified — check manually.`; }
+  else { cls = "pass"; txt = `✔ ${toon} can SR this item.`; }
+  return `<div class="verdict ${cls}" style="margin-top:10px; font-size:14px">${txt}</div>`;
+}
+
+// WCL figure to two decimal places, e.g. 99.50%.
+function fmtPct(v) {
+  return v == null ? "—" : v.toFixed(2) + "%";
+}
+
+// Standard Warcraft Logs parse-percentile colours. The pale dark-theme values
+// wash out on white, so use darkened variants in light mode.
+function parseColor(v) {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  if (v == null) return light ? "#647085" : "#9aa4b0";
+  if (v >= 100) return light ? "#a8791a" : "#e5cc80"; // gold
+  if (v >= 99)  return light ? "#c2185b" : "#e268a8"; // pink
+  if (v >= 95)  return light ? "#d15e00" : "#ff8000"; // orange
+  if (v >= 75)  return light ? "#7b1fa2" : "#a335ee"; // purple
+  if (v >= 50)  return light ? "#0059c9" : "#0070ff"; // blue
+  if (v >= 25)  return light ? "#2e8b00" : "#1eff00"; // green
+  return light ? "#647085" : "#9aa4b0";               // grey
+}
+
+function escape(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+</script>
+</body>
+</html>

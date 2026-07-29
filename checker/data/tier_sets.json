@@ -1,0 +1,21 @@
+{
+  "_comment": "SoD tier set detection for the set-bonus SR warning. set_ids discovered empirically from the guild roster via the Blizzard API. The item_id_band + min_total_pieces act as a self-maintaining fallback so a class/role tier set we haven't listed is still classified correctly. Edit set_ids if a new tier set appears.",
+  "scarlet_enclave": {
+    "label": "Scarlet Enclave",
+    "token_prefix": "Consecrated",
+    "min_pieces": 6,
+    "set_ids": [1932, 1933, 1934, 1935, 1936, 1937, 1938, 1939, 1940, 1941, 1942, 1943, 1944, 1945, 1946, 1947, 1948, 1953, 1954, 1963],
+    "item_id_band": [239000, 247000],
+    "min_total_pieces": 6
+  },
+  "naxxramas": {
+    "label": "Naxxramas",
+    "token_prefix": "Desecrated",
+    "min_pieces": 6,
+    "set_ids": [1882, 1883, 1884, 1885, 1890, 1891, 1892, 1893, 1894, 1895, 1896, 1897, 1898, 1899, 1900, 1901, 1902, 1903, 1904, 1905],
+    "item_id_band": [236000, 236400],
+    "min_total_pieces": 6
+  },
+  "enchant_required_slots": ["HEAD", "BACK", "CHEST", "WRIST", "HANDS", "LEGS", "FEET", "MAIN_HAND"],
+  "enchant_exempt_slots": ["SHOULDER"]
+}
