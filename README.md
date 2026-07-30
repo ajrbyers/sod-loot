@@ -26,6 +26,11 @@ It answers two questions:
 for a few hours (`API_CACHE_SECONDS`, default 3h); the result shows the cache age
 and a **↻ Refresh** button to force a live re-fetch.
 
+**Character autosuggest:** the toon input suggests guild characters from a
+Guild Roster Manager export at `checker/data/grm.csv` (`ROSTER_FILE` to
+override) and prefills the alts box from the export's "Player Alts" column.
+Drop a fresh GRM export over the file to refresh — no restart needed.
+
 Full loot rules: <https://docs.google.com/document/d/1JuMnO4QfMjLDNtPWO0-iHN9khzqxWRxpuhktsD8UdXo/edit>
 
 ## The rare (parse-gated) items

@@ -79,6 +79,10 @@ CACHES = {
 # How long API responses (parses, attendance, gear) are cached, in seconds.
 API_CACHE_SECONDS = int(os.environ.get("API_CACHE_SECONDS", str(3 * 60 * 60)))
 
+# Guild Roster Manager CSV export (";"-separated). Drop a fresh export over the
+# file to refresh the character autosuggest — no restart needed.
+ROSTER_FILE = os.environ.get("ROSTER_FILE", str(BASE_DIR / "checker" / "data" / "grm.csv"))
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 

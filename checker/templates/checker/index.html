@@ -115,6 +115,17 @@
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 20px; padding: 7px 12px; font-size: 13px; cursor: pointer; margin: 0; }
   #themeToggle:hover { border-color: var(--gold); }
+  /* Character autosuggest dropdown */
+  .suggest-wrap { position: relative; }
+  .suggest { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+             background: var(--panel2); border: 1px solid var(--border); border-radius: 9px;
+             box-shadow: 0 10px 30px var(--shadow); overflow: hidden; }
+  .suggest .opt { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+                  padding: 9px 13px; cursor: pointer; }
+  .suggest .opt + .opt { border-top: 1px solid var(--border); }
+  .suggest .opt:hover, .suggest .opt.active { background: color-mix(in srgb, var(--gold) 12%, transparent); }
+  .suggest .opt .cname { font-weight: 700; }
+  .suggest .opt .cmeta { color: var(--muted); font-size: 12px; white-space: nowrap; }
   /* Requirement checklist in item results */
   .reqs { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
   .req { display: flex; align-items: center; gap: 8px; font-size: 13px; }
@@ -140,7 +151,10 @@
        (attendance is counted across all of them).</p>
 
     <label for="main">Toon you're enquiring about</label>
-    <input type="text" id="main" placeholder="e.g. Healrond" autocomplete="off">
+    <div class="suggest-wrap">
+      <input type="text" id="main" placeholder="e.g. Healrond" autocomplete="off">
+      <div id="mainSuggest" class="suggest" hidden></div>
+    </div>
 
     <label for="toons">Your other toons (optional — one per line or comma-separated)</label>
     <textarea id="toons" placeholder="Appa&#10;Clavigula"></textarea>
@@ -394,6 +408,88 @@ function renderCacheLine(cache) {
   }
   return `<div class="cacheline"><span>${txt}</span>
     <button class="ghost small" onclick="runCheck(true)">↻ Refresh</button></div>`;
+}
+
+// Character autosuggest on the "main" input — suggestions come with the
+// player's alts, which prefill the toons box on selection.
+const mainInput = document.getElementById("main");
+const toonsBox = document.getElementById("toons");
+const suggestBox = document.getElementById("mainSuggest");
+let suggestTimer = null;
+let suggestMatches = [];
+let suggestIndex = -1;
+// Remember what we last auto-filled so we never clobber hand-typed toons.
+let lastAutofill = null;
+
+mainInput.addEventListener("input", () => {
+  clearTimeout(suggestTimer);
+  const q = mainInput.value.trim();
+  if (q.length < 2) { hideSuggest(); return; }
+  suggestTimer = setTimeout(() => fetchSuggest(q), 200);
+});
+
+mainInput.addEventListener("keydown", (e) => {
+  if (suggestBox.hidden) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); moveSuggest(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveSuggest(-1); }
+  else if (e.key === "Enter") {
+    if (suggestIndex >= 0) { e.preventDefault(); pickSuggest(suggestIndex); }
+  }
+  else if (e.key === "Escape") { hideSuggest(); }
+});
+
+// mousedown (not click) so selection wins the race against the input's blur.
+suggestBox.addEventListener("mousedown", (e) => {
+  const opt = e.target.closest(".opt");
+  if (opt) { e.preventDefault(); pickSuggest(Number(opt.dataset.i)); }
+});
+mainInput.addEventListener("blur", () => setTimeout(hideSuggest, 150));
+
+async function fetchSuggest(q) {
+  try {
+    const res = await fetch("/api/characters?q=" + encodeURIComponent(q));
+    const d = await res.json();
+    if (mainInput.value.trim() !== q) return;  // stale response
+    suggestMatches = d.matches || [];
+    renderSuggest();
+  } catch (e) { hideSuggest(); }
+}
+
+function renderSuggest() {
+  if (!suggestMatches.length) { hideSuggest(); return; }
+  suggestIndex = -1;
+  suggestBox.innerHTML = suggestMatches.map((m, i) => {
+    const meta = [m.level, m.class].filter(Boolean).join(" ");
+    const alts = m.alts.length ? ` · ${m.alts.length} alt${m.alts.length > 1 ? "s" : ""}` : "";
+    return `<div class="opt" data-i="${i}"><span class="cname">${escape(m.name)}</span>
+      <span class="cmeta">${escape(meta)}${alts}</span></div>`;
+  }).join("");
+  suggestBox.hidden = false;
+}
+
+function moveSuggest(dir) {
+  suggestIndex = (suggestIndex + dir + suggestMatches.length) % suggestMatches.length;
+  suggestBox.querySelectorAll(".opt").forEach((el, i) =>
+    el.classList.toggle("active", i === suggestIndex));
+}
+
+function pickSuggest(i) {
+  const m = suggestMatches[i];
+  if (!m) return;
+  mainInput.value = m.name;
+  const current = toonsBox.value.trim();
+  if (!current || current === lastAutofill) {
+    lastAutofill = m.alts.join("\n");
+    toonsBox.value = lastAutofill;
+  }
+  hideSuggest();
+}
+
+function hideSuggest() {
+  suggestBox.hidden = true;
+  suggestBox.innerHTML = "";
+  suggestMatches = [];
+  suggestIndex = -1;
 }
 
 // Item search (debounced)

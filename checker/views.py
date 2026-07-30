@@ -6,7 +6,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
-from . import apicache, blizzard, gear, items, wcl
+from . import apicache, blizzard, gear, items, roster, wcl
 
 
 def index(request):
@@ -164,3 +164,10 @@ def eligibility(request):
 @require_GET
 def item_search(request):
     return JsonResponse(items.search(request.GET.get("q", "")))
+
+
+@require_GET
+def character_search(request):
+    """Autosuggest for guild characters; each match carries the player's alts
+    so the frontend can prefill the toons box without a second request."""
+    return JsonResponse({"matches": roster.search(request.GET.get("q", ""))})
