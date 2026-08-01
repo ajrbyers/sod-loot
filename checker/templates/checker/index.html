@@ -459,7 +459,7 @@ function renderSuggest() {
   if (!suggestMatches.length) { hideSuggest(); return; }
   suggestIndex = -1;
   suggestBox.innerHTML = suggestMatches.map((m, i) => {
-    const meta = [m.level, m.class].filter(Boolean).join(" ");
+    const meta = [m.level, m.class].filter(Boolean).join(" ") || (m.remembered ? "remembered" : "");
     const alts = m.alts.length ? ` · ${m.alts.length} alt${m.alts.length > 1 ? "s" : ""}` : "";
     return `<div class="opt" data-i="${i}"><span class="cname">${escape(m.name)}</span>
       <span class="cmeta">${escape(meta)}${alts}</span></div>`;

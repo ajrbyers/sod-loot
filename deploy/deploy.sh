@@ -26,7 +26,8 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-echo ">> Cache table + static files"
+echo ">> Migrations + cache table + static files"
+.venv/bin/python manage.py migrate --noinput
 .venv/bin/python manage.py createcachetable
 .venv/bin/python manage.py collectstatic --noinput
 

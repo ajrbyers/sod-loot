@@ -7,6 +7,7 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
 from . import apicache, blizzard, gear, items, roster, wcl
+from .models import ToonLink
 
 
 def index(request):
@@ -69,6 +70,21 @@ def eligibility(request):
         attendance, attend_meta = wcl.get_attendance(all_toons, weeks_window, force=force)
     except wcl.WCLError as exc:
         return JsonResponse({"error": str(exc)}, status=502)
+
+    # Remember that these toons belong together so future checks (by any
+    # officer, starting from any member of the cluster) prefill the rest.
+    # Only when alts were provided: a bare main submitted without picking the
+    # suggestion must not erase a learned link. The submitted cluster replaces
+    # any cluster it overlaps with (latest wins, so corrections self-apply).
+    if toons:
+        keys = [roster.fold(t) for t in all_toons]
+        stale = [
+            link.pk
+            for link in ToonLink.objects.all()
+            if set(link.keys) & set(keys)
+        ]
+        ToonLink.objects.filter(pk__in=stale).delete()
+        ToonLink.objects.create(members=all_toons, keys=keys)
 
     best = parse.get("best_average")
     parse_ok = best is not None and best >= threshold
@@ -169,5 +185,30 @@ def item_search(request):
 @require_GET
 def character_search(request):
     """Autosuggest for guild characters; each match carries the player's alts
-    so the frontend can prefill the toons box without a second request."""
-    return JsonResponse({"matches": roster.search(request.GET.get("q", ""))})
+    so the frontend can prefill the toons box without a second request.
+
+    GRM roster matches come first; remembered links (ToonLink) fill in
+    non-guildies the roster doesn't know about. Any member of a remembered
+    cluster matches, with the rest of the cluster offered as their alts."""
+    q = (request.GET.get("q", "") or "").strip()
+    matches = roster.search(q)
+    if q:
+        fq = roster.fold(q)
+        seen = {roster.fold(m["name"]) for m in matches}
+        prefix, contains = [], []
+        for link in ToonLink.objects.all():
+            for i, key in enumerate(link.keys):
+                if key in seen or fq not in key:
+                    continue
+                entry = {
+                    "name": link.members[i],
+                    "level": "",
+                    "class": "",
+                    "main_or_alt": "",
+                    "alts": [m for j, m in enumerate(link.members) if j != i],
+                    "remembered": True,
+                }
+                (prefix if key.startswith(fq) else contains).append(entry)
+                seen.add(key)
+        matches.extend(prefix + contains)
+    return JsonResponse({"matches": matches[:10]})
