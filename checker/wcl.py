@@ -20,8 +20,8 @@ def _norm(s):
     names like 'Zkittlèz' compare regardless of Unicode form / case."""
     return unicodedata.normalize("NFC", (s or "").strip()).casefold()
 
+# OAuth tokens are minted on www and are valid for every partition endpoint.
 TOKEN_URL = "https://www.warcraftlogs.com/oauth/token"
-API_URL = "https://www.warcraftlogs.com/api/v2/client"
 
 # In-process caches. Fine for a small single-worker tool; swap for a real cache
 # (Redis / Django cache framework) if you scale out to multiple workers.
@@ -93,7 +93,7 @@ def graphql(query, variables=None):
     token = _get_token()
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     payload = _http_json(
-        API_URL,
+        settings.WCL_API_URL,
         data=body,
         headers={
             "Authorization": f"Bearer {token}",
@@ -153,8 +153,8 @@ query CharById($id: Int!, $zone: Int!, $metric: CharacterPageRankingMetricType!,
 }
 """ % _RANKINGS_FRAGMENT
 
-# SoD characters on connected realms often aren't resolvable by name+realm, but
-# ARE resolvable by their numeric WCL id — which we get from the guild roster.
+# The guild roster gives us numeric WCL ids up front, saving a name+realm
+# resolution round-trip for the common (guildie) case.
 _MEMBERS_QUERY = """
 query Members($id: Int!, $page: Int!) {
   guildData {
@@ -169,7 +169,7 @@ query Members($id: Int!, $page: Int!) {
 """
 
 # Resolves name -> WCL character id for non-roster raiders (trials/pugs) via a
-# report they appeared in. SoD characters aren't resolvable by name+realm.
+# report they appeared in.
 _RANKED_CHARS_QUERY = """
 query Ranked($code: String!) {
   reportData {
@@ -320,7 +320,7 @@ def get_best_parse(name, realm_slug=None, region=None, metric="dps", spec=None, 
 def _resolve_character_id(name):
     """Resolve a name to a WCL character id via a recent report they were in.
 
-    Covers non-roster raiders (trials/pugs) that name+realm lookup can't find.
+    Covers non-roster raiders (trials/pugs) without a name+realm round-trip.
     """
     target = _norm(name)
     for raid in _fetch_all_raids():
@@ -337,8 +337,10 @@ def _resolve_character_id(name):
 def _get_best_parse(name, realm_slug=None, region=None, metric="dps", spec=None):
     """Return the character's best-performance-average and per-boss rankings.
 
-    Resolves the name to a WCL character id via the guild roster first (reliable
-    for SoD connected realms), then falls back to a name+realm lookup.
+    Resolves the name to a WCL character id via the guild roster first (no
+    extra round-trip), then via guild reports, then falls back to a name+realm
+    lookup — which requires the partition-scoped WCL_API_URL endpoint to be the
+    one hosting the character (see settings).
     """
     zone = settings.PARSE_ZONE_ID
     variables = {"zone": zone, "metric": metric, "spec": spec or None}
@@ -357,7 +359,8 @@ def _get_best_parse(name, realm_slug=None, region=None, metric="dps", spec=None)
         if character:
             return _parse_from_character(character)
 
-    # 3) Last resort: direct name+realm lookup (unreliable for SoD, but harmless).
+    # 3) Last resort: direct name+realm lookup (non-guildies who've never
+    #    raided with us, e.g. SR-ing outsiders).
     if realm_slug is None or region is None:
         realm_slug, region, _ = get_guild_server()
     data = graphql(

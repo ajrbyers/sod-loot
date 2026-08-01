@@ -95,6 +95,15 @@ TIME_ZONE = "UTC"
 WCL_CLIENT_ID = os.environ.get("WCL_CLIENT_ID", "")
 WCL_CLIENT_SECRET = os.environ.get("WCL_CLIENT_SECRET", "")
 
+# The v2 GraphQL endpoint is partition-scoped: character name+realm lookups only
+# resolve on the partition that hosts the character. SoD characters resolve on
+# sod.warcraftlogs.com but return null on www — guild and by-id queries work on
+# either, which is why only non-roster lookups broke on www. Point this at a
+# different partition endpoint if the guild ever moves game version.
+WCL_API_URL = os.environ.get(
+    "WCL_API_URL", "https://sod.warcraftlogs.com/api/v2/client"
+)
+
 # Our guild on Warcraft Logs.
 GUILD_ID = int(os.environ.get("GUILD_ID", "811296"))
 
