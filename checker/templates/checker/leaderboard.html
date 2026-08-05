@@ -16,10 +16,16 @@
   </header>
 
   <div class="card">
-    <label class="radio" style="flex:none; display:inline-flex">
-      <input type="checkbox" id="includePugs">
-      <span><b>Include non-guildies</b><small>pugs &amp; trials seen in our logs</small></span>
-    </label>
+    <div class="radios">
+      <label class="radio" style="flex:none; display:inline-flex">
+        <input type="checkbox" id="includePugs">
+        <span><b>Include non-guildies</b><small>pugs &amp; trials seen in our logs</small></span>
+      </label>
+      <label class="radio" style="flex:none; display:inline-flex">
+        <input type="checkbox" id="grmGroup">
+        <span><b>Group attendance by player</b><small>count weeks across GRM alt clusters</small></span>
+      </label>
+    </div>
     <div id="lbOut" class="result"><div class="spin">Loading standings…</div></div>
   </div>
 
@@ -48,6 +54,7 @@ async function loadLeaderboard(force) {
 function renderLeaderboard() {
   if (!lbData) return;
   const includePugs = document.getElementById("includePugs").checked;
+  const grmGrouped = document.getElementById("grmGroup").checked;
   const players = (lbData.players || []).filter(p => includePugs || p.guildie);
   if (!players.length) {
     lbOut.innerHTML = '<div class="error">No players found in the swept logs.</div>';
@@ -60,7 +67,9 @@ function renderLeaderboard() {
     <th class="r">Best boss DPS</th>
     <th class="r">Best parse</th>
     <th class="r">Best HPS</th>
-    <th class="r" title="Distinct reset weeks in our logs">Weeks</th>
+    <th class="r" title="${grmGrouped
+      ? "Distinct reset weeks any toon in their GRM alt cluster attended (own-toon count in brackets)"
+      : "Distinct reset weeks in our logs"}">Weeks</th>
     <th class="r">Last seen</th></tr></thead><tbody>`;
 
   players.forEach((p, i) => {
@@ -85,8 +94,17 @@ function renderLeaderboard() {
       ? `<td class="r"><b>${Math.round(bh.hps).toLocaleString()}</b>
           <div class="cls" style="color:${parseColor(bh.rank_percent)}">${fmtPct(bh.rank_percent)}</div></td>`
       : '<td class="r cls">—</td>';
-    html += `<td class="r">${p.weeks}</td>
-      <td class="r cls">${escape(p.last_seen || "")}</td></tr>`;
+    if (grmGrouped && p.cluster_weeks != null) {
+      const tip = p.cluster_toons && p.cluster_toons.length
+        ? ` title="counted with: ${escape(p.cluster_toons.join(", "))}"`
+        : "";
+      const gained = p.cluster_weeks > p.weeks;
+      html += `<td class="r"${tip}>${p.cluster_weeks}${gained
+        ? ` <span class="cls">(${p.weeks})</span>` : ""}</td>`;
+    } else {
+      html += `<td class="r">${p.weeks}</td>`;
+    }
+    html += `<td class="r cls">${escape(p.last_seen || "")}</td></tr>`;
   });
   html += "</tbody></table></div>";
 
@@ -102,6 +120,7 @@ function renderLeaderboard() {
 }
 
 document.getElementById("includePugs").addEventListener("change", renderLeaderboard);
+document.getElementById("grmGroup").addEventListener("change", renderLeaderboard);
 loadLeaderboard(false);
 </script>
 </body>

@@ -8,7 +8,7 @@ from unittest import mock
 from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from checker import gear, roster, wcl
+from checker import gear, roster, views, wcl
 from checker.models import ToonLink
 
 CSV_HEADER = (
@@ -524,6 +524,8 @@ class LeaderboardTests(SimpleTestCase):
             wcl, "_cached_all_raids", return_value=(raids, None)
         ), mock.patch.object(
             wcl, "get_member_map", return_value={"slammer": {"id": 1, "name": "Slammer"}}
+        ), mock.patch.object(
+            roster, "characters", return_value=[]
         ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
             return wcl._aggregate_leaderboard()
 
@@ -551,6 +553,55 @@ class LeaderboardTests(SimpleTestCase):
         self.assertEqual(healy["best_hps"]["hps"], 1500.0)
         self.assertEqual(healy["best_hps"]["rank_percent"], 88)
 
+    def test_grm_clusters_merge_attendance_across_alts(self):
+        # Slammer raids week one, their GRM-listed alt raids week two — the
+        # cluster count covers both while per-toon weeks stay honest.
+        raids = [se_raid("SE1", (2026, 7, 9)), se_raid("SE2", (2026, 7, 2))]
+        rankings = {
+            ("SE1", "dps"): {
+                "data": [fight(3, "Balnazzar",
+                               chars("dps", ("Slammer", "Warrior", "Fury", 2400.0, 90)))]
+            },
+            ("SE1", "hps"): {"data": []},
+            ("SE2", "dps"): {
+                "data": [fight(3, "Balnazzar",
+                               chars("dps", ("Slamalt", "Mage", "Fire", 1200.0, 50)))]
+            },
+            ("SE2", "hps"): {"data": []},
+        }
+        grm = [
+            {"name": "Slammer", "alts": ["Slamalt"], "level": "60",
+             "class": "Warrior", "main_or_alt": "Main"},
+            {"name": "Slamalt", "alts": ["Slammer"], "level": "60",
+             "class": "Mage", "main_or_alt": "Alt"},
+        ]
+
+        def fake_rankings(code, metric="dps", force=False):
+            return rankings[(code, metric)], None
+
+        with mock.patch.object(
+            wcl, "_cached_all_raids", return_value=(raids, None)
+        ), mock.patch.object(
+            wcl, "get_member_map", return_value={}
+        ), mock.patch.object(
+            roster, "characters", return_value=grm
+        ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
+            result = wcl._aggregate_leaderboard()
+
+        rows = {r["name"]: r for r in result["players"]}
+        self.assertEqual(rows["Slammer"]["weeks"], 1)
+        self.assertEqual(rows["Slammer"]["cluster_weeks"], 2)
+        self.assertEqual(rows["Slammer"]["cluster_toons"], ["Slamalt"])
+        # The alt's row sees the same merged count, pointing back at the main.
+        self.assertEqual(rows["Slamalt"]["cluster_weeks"], 2)
+        self.assertEqual(rows["Slamalt"]["cluster_toons"], ["Slammer"])
+
+    def test_toon_without_grm_data_keeps_its_own_weeks(self):
+        result = self.aggregate()  # roster.characters mocked empty
+        slammer = {r["name"]: r for r in result["players"]}["Slammer"]
+        self.assertEqual(slammer["cluster_weeks"], slammer["weeks"])
+        self.assertEqual(slammer["cluster_toons"], [])
+
     def test_other_zones_bundled_into_a_log_are_excluded(self):
         # Mixed logs carry fights (and even another zone's complete-raid
         # pseudo-fight) from other raids; neither may leak into SE standings.
@@ -577,6 +628,8 @@ class LeaderboardTests(SimpleTestCase):
             return_value=([se_raid("SE1", (2026, 7, 9))], None),
         ), mock.patch.object(
             wcl, "get_member_map", return_value={}
+        ), mock.patch.object(
+            roster, "characters", return_value=[]
         ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
             result = wcl._aggregate_leaderboard()
 
@@ -596,6 +649,8 @@ class LeaderboardTests(SimpleTestCase):
             wcl, "_cached_all_raids", return_value=(raids, None)
         ), mock.patch.object(
             wcl, "get_member_map", return_value={}
+        ), mock.patch.object(
+            roster, "characters", return_value=[]
         ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
             result = wcl._aggregate_leaderboard()
 
@@ -653,7 +708,58 @@ class ReportCardTests(SimpleTestCase):
         self.assertIsNone(metas)
 
 
+class PasswordGateTests(SimpleTestCase):
+    def enter_password(self, password="carnage"):
+        return self.client.post("/leaderboard", {"password": password})
+
+    def test_gated_pages_show_the_password_form(self):
+        for path in ("/leaderboard", "/reports"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, 'name="password"')
+
+    def test_wrong_password_is_rejected_without_a_cookie(self):
+        response = self.enter_password("mercy")
+        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, "Wrong password", status_code=403)
+        self.assertNotIn(views.PW_COOKIE, response.cookies)
+
+    def test_correct_password_sets_cookie_and_unlocks_both_pages(self):
+        response = self.enter_password()
+        self.assertRedirects(
+            response, "/leaderboard", fetch_redirect_response=False
+        )
+        self.assertIn(views.PW_COOKIE, response.cookies)
+        self.assertContains(self.client.get("/leaderboard"), "Roster Leaderboard")
+        self.assertContains(self.client.get("/reports"), "After-Action Reports")
+
+    def test_tampered_cookie_is_ignored(self):
+        self.client.cookies[views.PW_COOKIE] = "forged-token"
+        response = self.client.get("/leaderboard")
+        self.assertContains(response, 'name="password"')
+
+    def test_apis_refuse_without_the_cookie(self):
+        self.assertEqual(self.client.get("/api/leaderboard").status_code, 403)
+        self.assertEqual(self.client.get("/api/reportcard").status_code, 403)
+
+    def test_apis_work_once_authenticated(self):
+        self.enter_password()
+        payload = (
+            {"players": [], "raids_swept": 0, "raids_failed": 0, "zone": "SE"},
+            {"cached": True, "age": 0, "ttl": 1},
+        )
+        with mock.patch.object(wcl, "get_leaderboard", return_value=payload):
+            self.assertEqual(self.client.get("/api/leaderboard").status_code, 200)
+
+    def test_index_and_its_apis_stay_open(self):
+        with override_settings(ROSTER_FILE="/nonexistent/grm.csv"):
+            self.assertEqual(self.client.get("/").status_code, 200)
+
+
 class LeaderboardEndpointTests(SimpleTestCase):
+    def setUp(self):
+        self.client.post("/leaderboard", {"password": "carnage"})
+
     def test_returns_players_with_cache(self):
         payload = (
             {"players": [{"name": "Slammer"}], "raids_swept": 2, "zone": "Scarlet Enclave"},
@@ -671,6 +777,9 @@ class LeaderboardEndpointTests(SimpleTestCase):
 
 
 class ReportCardEndpointTests(SimpleTestCase):
+    def setUp(self):
+        self.client.post("/leaderboard", {"password": "carnage"})
+
     def request_card(self, **params):
         raids = [
             se_raid("SE1", (2026, 7, 9)),

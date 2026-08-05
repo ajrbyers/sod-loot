@@ -1,13 +1,82 @@
 """Views for the SoD loot-eligibility checker."""
+import functools
+import hmac
 import json
 
 from django.conf import settings
+from django.core import signing
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from . import apicache, blizzard, gear, items, roster, wcl
 from .models import ToonLink
+
+
+# ---------------------------------------------------------------------------
+# Simple shared-password gate for the standings pages (no accounts/sessions —
+# a signed cookie, like the rest of this tool's lightweight approach).
+# ---------------------------------------------------------------------------
+PW_COOKIE = "sodloot_access"
+_PW_SALT = "sodloot.page-password"
+_PW_MAX_AGE = 30 * 24 * 3600  # re-prompt after a month
+
+
+def has_page_access(request):
+    try:
+        token = request.COOKIES.get(PW_COOKIE, "")
+        return signing.loads(token, salt=_PW_SALT, max_age=_PW_MAX_AGE) == "ok"
+    except signing.BadSignature:
+        return False
+
+
+def password_protected(view):
+    """Gate a page behind settings.PAGE_PASSWORD.
+
+    A correct submission sets the signed cookie and redirects back to the
+    page; anything else gets the password form."""
+
+    @functools.wraps(view)
+    def wrapper(request, *args, **kwargs):
+        if has_page_access(request):
+            return view(request, *args, **kwargs)
+        error = None
+        if request.method == "POST":
+            supplied = request.POST.get("password", "")
+            if hmac.compare_digest(supplied, settings.PAGE_PASSWORD):
+                response = redirect(request.path)
+                response.set_cookie(
+                    PW_COOKIE,
+                    signing.dumps("ok", salt=_PW_SALT),
+                    max_age=_PW_MAX_AGE,
+                    httponly=True,
+                    samesite="Lax",
+                    secure=request.is_secure(),
+                )
+                return response
+            error = "Wrong password."
+        response = render(
+            request,
+            "checker/password.html",
+            {"error": error},
+            status=403 if error else 200,
+        )
+        response["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+    return wrapper
+
+
+def require_page_access(view):
+    """JSON-flavoured guard for the gated pages' API endpoints."""
+
+    @functools.wraps(view)
+    def wrapper(request, *args, **kwargs):
+        if not has_page_access(request):
+            return JsonResponse({"error": "Password required."}, status=403)
+        return view(request, *args, **kwargs)
+
+    return wrapper
 
 
 def index(request):
@@ -216,6 +285,7 @@ def top_dps(request):
     )
 
 
+@password_protected
 def leaderboard(request):
     response = render(
         request,
@@ -230,6 +300,7 @@ def leaderboard(request):
     return response
 
 
+@password_protected
 def reports(request):
     response = render(
         request,
@@ -244,6 +315,7 @@ def reports(request):
 
 
 @require_GET
+@require_page_access
 def api_leaderboard(request):
     """Guild standings, aggregated from the guild's own SE report rankings."""
     force = request.GET.get("force") == "1"
@@ -255,6 +327,7 @@ def api_leaderboard(request):
 
 
 @require_GET
+@require_page_access
 def api_report_card(request):
     """After-action card for one report (?code=...), defaulting to the newest.
 

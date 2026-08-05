@@ -13,7 +13,7 @@ import urllib.request
 
 from django.conf import settings
 
-from . import apicache
+from . import apicache, roster
 
 
 def _norm(s):
@@ -687,7 +687,7 @@ def get_report_rankings(code, metric="dps", force=False):
     after-action report card, so each report is fetched once per metric.
     Returns (rankings_dict, cache_meta).
     """
-    def fetch():
+    def fetch_once():
         # WCL computes a report's rankings lazily on first request, which can
         # take well over the default timeout — give these calls longer.
         data = graphql(
@@ -696,6 +696,15 @@ def get_report_rankings(code, metric="dps", force=False):
         return (
             ((data.get("reportData") or {}).get("report") or {}).get("rankings") or {}
         )
+
+    def fetch():
+        # First requests can also 500 while WCL's computation is mid-flight;
+        # a short pause and one retry usually lands after it completes.
+        try:
+            return fetch_once()
+        except WCLError:
+            time.sleep(2)
+            return fetch_once()
 
     return apicache.get_or_set(f"reportrankings:{code}:{metric}", fetch, force=force)
 
@@ -883,9 +892,31 @@ def _aggregate_leaderboard():
                         "spec": _spec_display(c.get("spec"), None),
                     }
 
+    # GRM alt clusters: the roster export names every player's full cluster,
+    # letting attendance be counted across all their toons. GRM keys are
+    # accent-folded so "Shapíe" in a log matches the export.
+    fold_index = {}
+    for key, row in players.items():
+        fold_index.setdefault(roster.fold(row["name"]), key)
+    clusters = {}
+    for character in roster.characters():
+        cluster = {roster.fold(character["name"])}
+        cluster.update(roster.fold(a) for a in character["alts"])
+        clusters[roster.fold(character["name"])] = cluster
+
     out = []
     for row in players.values():
         role = max(row["roles"], key=row["roles"].get) if row["roles"] else None
+        cluster_weeks = set(row["weeks"])
+        cluster_toons = []
+        for fkey in clusters.get(roster.fold(row["name"]), ()):
+            pkey = fold_index.get(fkey)
+            if pkey is None:
+                continue
+            other = players[pkey]
+            cluster_weeks |= other["weeks"]
+            if other["name"] != row["name"]:
+                cluster_toons.append(other["name"])
         out.append(
             {
                 "name": row["name"],
@@ -897,6 +928,10 @@ def _aggregate_leaderboard():
                 "best_parse": row["best_parse"],
                 "best_hps": row["best_hps"],
                 "weeks": len(row["weeks"]),
+                # Distinct weeks any toon in their GRM cluster attended, and
+                # which of those toons appear in our logs.
+                "cluster_weeks": len(cluster_weeks),
+                "cluster_toons": sorted(cluster_toons),
                 "last_seen": row["last_seen"],
             }
         )

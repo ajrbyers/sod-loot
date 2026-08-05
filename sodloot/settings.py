@@ -111,6 +111,9 @@ GUILD_ID = int(os.environ.get("GUILD_ID", "811296"))
 PARSE_ZONE_ID = int(os.environ.get("PARSE_ZONE_ID", "2018"))
 PARSE_ZONE_NAME = os.environ.get("PARSE_ZONE_NAME", "Scarlet Enclave")
 
+# Shared password for the leaderboard / after-action report pages.
+PAGE_PASSWORD = os.environ.get("PAGE_PASSWORD", "carnage")
+
 # Zones offered on the after-action reports page (attendance zone names).
 REPORT_CARD_ZONES = [
     z.strip()
