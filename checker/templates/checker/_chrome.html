@@ -1,0 +1,53 @@
+<button id="themeToggle" onclick="toggleTheme()">🌙 Dark</button>
+<nav id="siteNav">
+  <a href="/">Checker</a>
+  <a href="/leaderboard">Leaderboard</a>
+  <a href="/reports">Reports</a>
+</nav>
+<script>
+// --- Theme (light / dark) ---
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  const btn = document.getElementById("themeToggle");
+  if (btn) btn.textContent = t === "light" ? "☀ Light" : "🌙 Dark";
+  try { localStorage.setItem("sodTheme", t); } catch (e) {}
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "light" ? "dark" : "light");
+}
+(function initTheme() {
+  let t;
+  try { t = localStorage.getItem("sodTheme"); } catch (e) {}
+  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  applyTheme(t);
+})();
+
+// WCL figure to two decimal places, e.g. 99.50%.
+function fmtPct(v) {
+  return v == null ? "—" : v.toFixed(2) + "%";
+}
+
+// Standard Warcraft Logs parse-percentile colours. The pale dark-theme values
+// wash out on white, so use darkened variants in light mode.
+function parseColor(v) {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  if (v == null) return light ? "#647085" : "#9aa4b0";
+  if (v >= 100) return light ? "#a8791a" : "#e5cc80"; // gold
+  if (v >= 99)  return light ? "#c2185b" : "#e268a8"; // pink
+  if (v >= 95)  return light ? "#d15e00" : "#ff8000"; // orange
+  if (v >= 75)  return light ? "#7b1fa2" : "#a335ee"; // purple
+  if (v >= 50)  return light ? "#0059c9" : "#0070ff"; // blue
+  if (v >= 25)  return light ? "#2e8b00" : "#1eff00"; // green
+  return light ? "#647085" : "#9aa4b0";               // grey
+}
+
+function escape(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+document.querySelectorAll("#siteNav a").forEach(a => {
+  if (a.getAttribute("href") === location.pathname) a.classList.add("active");
+});
+</script>

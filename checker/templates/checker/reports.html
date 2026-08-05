@@ -1,0 +1,98 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>After-Action Reports · Guild {{ guild_id }}</title>
+{% include "checker/_style.html" %}
+</head>
+<body>
+{% include "checker/_chrome.html" %}
+<div class="wrap">
+  <header>
+    <h1>📜 After-Action Reports</h1>
+    <p>Pick one of the guild's {{ report_zones|join:" / " }} logs to see that night's rankings —
+       tanks, healers and DPS, boss by boss.</p>
+  </header>
+
+  <div class="card">
+    <label for="reportSel">Raid log</label>
+    <select id="reportSel" disabled><option>Loading logs…</option></select>
+    <div id="rcOut" class="result"><div class="spin">Loading latest report…</div></div>
+  </div>
+
+  <footer>Percentiles are Warcraft Logs parses at time of caching (up to 3&nbsp;hours old).</footer>
+</div>
+
+<script>
+const rcOut = document.getElementById("rcOut");
+const reportSel = document.getElementById("reportSel");
+let currentCode = "";
+
+reportSel.addEventListener("change", () => loadCard(reportSel.value, false));
+
+async function loadCard(code, force) {
+  rcOut.innerHTML = `<div class="spin">${force ? "Refreshing from Warcraft Logs…" : "Loading report…"}</div>`;
+  try {
+    const params = new URLSearchParams();
+    if (code) params.set("code", code);
+    if (force) params.set("force", "1");
+    const res = await fetch("/api/reportcard?" + params.toString());
+    const d = await res.json();
+    if (!res.ok) { rcOut.innerHTML = `<div class="error">${escape(d.error || "Something went wrong.")}</div>`; return; }
+    currentCode = d.card.code;
+    renderPicker(d.reports, currentCode);
+    rcOut.innerHTML = renderCard(d.card, d.cache);
+  } catch (e) {
+    rcOut.innerHTML = `<div class="error">Network error: ${escape(e.message)}</div>`;
+  }
+}
+
+function renderPicker(reports, selected) {
+  reportSel.innerHTML = (reports || []).map(r =>
+    `<option value="${escape(r.code)}"${r.code === selected ? " selected" : ""}>
+      ${escape(r.zone)} — ${escape(r.date)}</option>`).join("");
+  reportSel.disabled = false;
+}
+
+function renderCard(card, cache) {
+  const fights = card.fights || [];
+  let html = "";
+
+  const sections = [["Tanks", card.tanks, "dps"], ["Healers", card.healers, "hps"], ["DPS", card.dps, "dps"]];
+  for (const [title, players, metric] of sections) {
+    if (!players || !players.length) continue;
+    html += `<h2 style="color:var(--gold); font-size:16px; margin:18px 0 6px">${title}
+      <span class="cls">${metric === "hps" ? "healing (HPS + healing parse)" : "damage (DPS + parse)"}</span></h2>`;
+    html += `<div class="dps-scroll"><table class="dps-table"><thead><tr><th>Player</th>
+      ${fights.map(f => `<th class="r">${escape(f.name)}</th>`).join("")}</tr></thead><tbody>`;
+    for (const p of players) {
+      html += `<tr><td><b>${escape(p.name)}</b>
+        <span class="cls">${escape(p.spec || "")}${p.class ? " " + escape(p.class) : ""}</span></td>`;
+      for (const f of fights) {
+        const cell = (p.cells || {})[String(f.id)];
+        const amount = cell && cell[metric];
+        const pct = cell && cell[metric + "_percent"];
+        if (amount == null || amount <= 0) { html += '<td class="r cls">—</td>'; continue; }
+        const tip = metric === "dps" && cell.spec ? ` title="${escape(cell.spec)}"` : "";
+        html += `<td class="r"${tip}><b>${Math.round(amount).toLocaleString()}</b>
+          <div class="cls" style="color:${parseColor(pct)}">${fmtPct(pct)}</div></td>`;
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table></div>";
+  }
+
+  const c = cache || {};
+  const m = Math.floor((c.age_seconds || 0) / 60);
+  html += `<div class="cacheline">
+    <span>${escape(card.zone)} · ${escape(card.date)} ·
+      ${c.cached ? (m < 1 ? "cached just now" : `cached ${m} min ago`) : "fresh from Warcraft Logs"}</span>
+    <button class="ghost small" onclick="loadCard(currentCode, true)">↻ Refresh</button></div>`;
+  return html;
+}
+
+loadCard("", false);
+</script>
+</body>
+</html>

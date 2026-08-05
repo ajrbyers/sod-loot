@@ -111,6 +111,15 @@ GUILD_ID = int(os.environ.get("GUILD_ID", "811296"))
 PARSE_ZONE_ID = int(os.environ.get("PARSE_ZONE_ID", "2018"))
 PARSE_ZONE_NAME = os.environ.get("PARSE_ZONE_NAME", "Scarlet Enclave")
 
+# Zones offered on the after-action reports page (attendance zone names).
+REPORT_CARD_ZONES = [
+    z.strip()
+    for z in os.environ.get(
+        "REPORT_CARD_ZONES", "Scarlet Enclave,Naxxramas"
+    ).split(",")
+    if z.strip()
+]
+
 # Eligibility thresholds (see the loot rules doc).
 PARSE_THRESHOLD = float(os.environ.get("PARSE_THRESHOLD", "75"))
 WEEKS_REQUIRED = int(os.environ.get("WEEKS_REQUIRED", "4"))

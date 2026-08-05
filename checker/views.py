@@ -177,6 +177,119 @@ def eligibility(request):
     return JsonResponse(result)
 
 
+@require_POST
+def top_dps(request):
+    """Highest raid-wide DPS for one toon, across every spec of their class and
+    both raid sizes. The frontend fans a pasted list out as one request per name
+    so results stream in and each toon caches independently.
+
+    Expects JSON: {"name": "<toon>", "force": bool}
+    """
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    name = (payload.get("name") or "").strip()
+    force = bool(payload.get("force"))
+    if not name:
+        return JsonResponse({"error": "Provide a character name."}, status=400)
+
+    try:
+        result, meta = wcl.get_top_dps(name, force=force)
+        # Whole-raid ("complete raid") DPS comes from the guild's own logs and
+        # is cached guild-wide, so it's composed here rather than per toon.
+        overall, overall_meta = wcl.get_complete_raid_best(
+            result.get("name") or name, force=force
+        )
+    except wcl.WCLError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+
+    return JsonResponse(
+        {
+            "query": name,
+            **result,
+            "overall": overall,
+            "zone": settings.PARSE_ZONE_NAME,
+            "cache": apicache.summarise([meta, overall_meta]),
+        }
+    )
+
+
+def leaderboard(request):
+    response = render(
+        request,
+        "checker/leaderboard.html",
+        {
+            "guild_id": settings.GUILD_ID,
+            "parse_zone_name": settings.PARSE_ZONE_NAME,
+            "weeks_window": settings.WEEKS_WINDOW,
+        },
+    )
+    response["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+def reports(request):
+    response = render(
+        request,
+        "checker/reports.html",
+        {
+            "guild_id": settings.GUILD_ID,
+            "report_zones": settings.REPORT_CARD_ZONES,
+        },
+    )
+    response["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+@require_GET
+def api_leaderboard(request):
+    """Guild standings, aggregated from the guild's own SE report rankings."""
+    force = request.GET.get("force") == "1"
+    try:
+        result, meta = wcl.get_leaderboard(force=force)
+    except wcl.WCLError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+    return JsonResponse({**result, "cache": apicache.summarise([meta])})
+
+
+@require_GET
+def api_report_card(request):
+    """After-action card for one report (?code=...), defaulting to the newest.
+
+    Also returns the SE/Naxx report list so one fetch fills the picker."""
+    force = request.GET.get("force") == "1"
+    code = (request.GET.get("code") or "").strip()
+    try:
+        raids, _ = wcl._cached_all_raids(force=force)
+        listing = [
+            {
+                "code": r["code"],
+                "zone": r["zone"],
+                "date": wcl.raid_date(r),
+            }
+            for r in raids
+            if r.get("zone") in settings.REPORT_CARD_ZONES
+        ]
+        if not listing:
+            return JsonResponse({"error": "No reports found."}, status=404)
+        if not code:
+            code = listing[0]["code"]
+        card, metas = wcl.get_report_card(code, force=force)
+    except wcl.WCLError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+    if card is None:
+        return JsonResponse({"error": "Unknown report code."}, status=404)
+    return JsonResponse(
+        {
+            "reports": listing,
+            "card": card,
+            "cache": apicache.summarise(metas or []),
+        }
+    )
+
+
 @require_GET
 def item_search(request):
     return JsonResponse(items.search(request.GET.get("q", "")))

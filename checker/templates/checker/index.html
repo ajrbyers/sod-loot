@@ -4,138 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SoD Loot Eligibility Checker · Guild {{ guild_id }}</title>
-<style>
-  :root {
-    --bg: #0f1216; --bg2: #1a2028; --panel: #171b21; --panel2: #1e242c; --border: #2a323d;
-    --text: #e6e1d3; --muted: #9aa4b0; --gold: #d4af37; --gold2: #f0d67a;
-    --green: #4caf6d; --red: #e05656; --amber: #e0a94c; --blue: #5b8fd6;
-    --shadow: rgba(0,0,0,.35); --h1shadow: #000; --heading: var(--gold2);
-  }
-  :root[data-theme="light"] {
-    --bg: #eef1f5; --bg2: #ffffff; --panel: #ffffff; --panel2: #f1f4f8; --border: #dde2ea;
-    --text: #1f2733; --muted: #647085; --gold: #b07a0a; --gold2: #955f00;
-    --green: #12824c; --red: #c02a2a; --amber: #b06a0c; --blue: #2461ab;
-    --shadow: rgba(30,45,70,.10); --h1shadow: transparent; --heading: #1c2430;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: radial-gradient(1200px 600px at 50% -200px, var(--bg2), var(--bg));
-    color: var(--text); font: 15px/1.5 "Segoe UI", system-ui, sans-serif; min-height: 100vh;
-  }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }
-  header { text-align: center; margin-bottom: 28px; }
-  h1 { font-size: 26px; margin: 0 0 6px; color: var(--heading);
-       letter-spacing: .5px; text-shadow: 0 1px 0 var(--h1shadow); }
-  header p { color: var(--muted); margin: 0; font-size: 14px; }
-  .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 22px; margin-bottom: 22px; box-shadow: 0 8px 30px var(--shadow);
-  }
-  .card h2 { margin: 0 0 4px; font-size: 18px; color: var(--gold); }
-  .card .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
-  input[type=text] {
-    width: 100%; padding: 11px 12px; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; font-size: 15px;
-  }
-  input[type=text]:focus { outline: none; border-color: var(--gold); }
-  textarea {
-    width: 100%; padding: 11px 12px; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; font-size: 15px;
-    min-height: 84px; resize: vertical; font-family: inherit;
-  }
-  button {
-    margin-top: 16px; background: linear-gradient(180deg, var(--gold2), var(--gold));
-    color: #241c00; border: none; border-radius: 8px; padding: 11px 20px;
-    font-weight: 700; font-size: 15px; cursor: pointer;
-  }
-  button:disabled { opacity: .5; cursor: default; }
-  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-  .result { margin-top: 20px; }
-  .verdict {
-    display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 10px;
-    font-weight: 700; font-size: 16px; margin-bottom: 14px;
-  }
-  .verdict.pass { background: color-mix(in srgb, var(--green) 14%, transparent); border: 1px solid var(--green); color: var(--green); }
-  .verdict.fail { background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); color: var(--red); }
-  .verdict.warn { background: color-mix(in srgb, var(--amber) 14%, transparent); border: 1px solid var(--amber); color: var(--amber); }
-  .check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px;
-           background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 10px; }
-  .check .badge { font-weight: 700; padding: 2px 9px; border-radius: 20px; font-size: 12px; white-space: nowrap; }
-  .badge.ok { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
-  .badge.no { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
-  .badge.warn { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber); }
-  .radios { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
-  .radio { flex: 1 1 200px; display: flex; align-items: center; gap: 10px; cursor: pointer;
-           background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px; }
-  .radio:has(input:checked) { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 12%, transparent); }
-  .radio input { accent-color: var(--gold); width: 16px; height: 16px; }
-  .radio span { display: flex; flex-direction: column; line-height: 1.25; }
-  .radio small { color: var(--muted); font-size: 12px; }
-  .slots { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
-  .slotrow { display: flex; justify-content: space-between; gap: 8px; font-size: 13px;
-             border-bottom: 1px solid var(--border); padding: 3px 0; }
-  .slotrow .sname { color: var(--muted); }
-  .sench.good { color: var(--green); } .sench.bad { color: var(--red); font-weight: 700; }
-  .cacheline { display: flex; align-items: center; justify-content: space-between;
-               margin-top: 14px; color: var(--muted); font-size: 12px; }
-  button.small { margin-top: 0; padding: 5px 12px; font-size: 13px; }
-  .check .body { flex: 1; }
-  .check .body b { color: var(--text); }
-  .check .detail { color: var(--muted); font-size: 13px; margin-top: 3px; }
-  .bosses { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 6px; margin-top: 10px; }
-  .boss { display: flex; justify-content: space-between; align-items: center; gap: 8px;
-          background: var(--panel2); border: 1px solid var(--border); border-radius: 7px;
-          padding: 6px 10px; }
-  .boss .bname { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .boss .bpct { font-weight: 800; font-size: 15px; font-variant-numeric: tabular-nums; }
-  .weeks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .pill { background: color-mix(in srgb, var(--blue) 18%, var(--panel2)); color: var(--blue);
-          border: 1px solid color-mix(in srgb, var(--blue) 45%, transparent);
-          font-size: 12px; padding: 3px 9px; border-radius: 20px; }
-  .item-result { padding: 13px 15px; border-radius: 9px; margin-top: 10px;
-                 background: var(--panel2); border: 1px solid var(--border); }
-  .item-result.rare { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, transparent); }
-  .item-result .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
-                      padding: 2px 8px; border-radius: 20px; font-weight: 700; }
-  .tag.rare { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold2); }
-  .tag.std { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); }
-  .item-result .name { font-size: 15px; font-weight: 700; }
-  .item-result .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
-  .error { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); border: 1px solid var(--red);
-           padding: 12px 14px; border-radius: 9px; margin-top: 16px; }
-  .spin { color: var(--muted); font-size: 14px; margin-top: 16px; }
-  .rare-list { columns: 2; column-gap: 20px; font-size: 13px; color: var(--muted); margin: 6px 0 0; padding-left: 18px; }
-  .rare-list li { margin-bottom: 4px; break-inside: avoid; }
-  a { color: var(--gold2); }
-  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; }
-  .num { color: var(--gold2); font-weight: 700; }
-  #themeToggle { position: fixed; top: 14px; right: 14px; z-index: 10;
-    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 20px; padding: 7px 12px; font-size: 13px; cursor: pointer; margin: 0; }
-  #themeToggle:hover { border-color: var(--gold); }
-  /* Character autosuggest dropdown */
-  .suggest-wrap { position: relative; }
-  .suggest { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
-             background: var(--panel2); border: 1px solid var(--border); border-radius: 9px;
-             box-shadow: 0 10px 30px var(--shadow); overflow: hidden; }
-  .suggest .opt { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
-                  padding: 9px 13px; cursor: pointer; }
-  .suggest .opt + .opt { border-top: 1px solid var(--border); }
-  .suggest .opt:hover, .suggest .opt.active { background: color-mix(in srgb, var(--gold) 12%, transparent); }
-  .suggest .opt .cname { font-weight: 700; }
-  .suggest .opt .cmeta { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  /* Requirement checklist in item results */
-  .reqs { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
-  .req { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .req .dot { width: 16px; text-align: center; }
-  .req.need { color: var(--text); } .req.na { color: var(--muted); }
-  .req.pass .dot { color: var(--green); } .req.fail .dot { color: var(--red); }
-</style>
+{% include "checker/_style.html" %}
 </head>
 <body>
-<button id="themeToggle" onclick="toggleTheme()">🌙 Dark</button>
+{% include "checker/_chrome.html" %}
 <div class="wrap">
   <header>
     <h1>⚔ SoD Loot Eligibility Checker</h1>
@@ -210,6 +82,19 @@
     </details>
   </div>
 
+  <!-- Bulk highest DPS -->
+  <div class="card">
+    <h2>Highest DPS (all specs)</h2>
+    <p class="sub">Paste toon names (comma or newline separated). For each, this finds their highest
+       damage in {{ parse_zone_name }} — every spec of their class is checked, in both 20-man and
+       40-man. <b>Overall</b> is their best whole-raid DPS from the guild's complete clears; the
+       boss columns show their best single-fight DPS from any log.</p>
+    <label for="dpsNames">Toon names</label>
+    <textarea id="dpsNames" placeholder="Aggrodeus, Healrond&#10;Shapíe"></textarea>
+    <button id="dpsBtn">Find highest DPS</button>
+    <div id="dpsOut" class="result"></div>
+  </div>
+
   <footer>
     Verdicts follow the <a href="https://docs.google.com/document/d/1JuMnO4QfMjLDNtPWO0-iHN9khzqxWRxpuhktsD8UdXo/edit" target="_blank" rel="noopener">full loot rules</a>.
     Loot council may still apply case by case.
@@ -218,24 +103,6 @@
 
 <script>
 const CSRF = "{{ csrf_token }}";
-
-// --- Theme (light / dark) ---
-function applyTheme(t) {
-  document.documentElement.setAttribute("data-theme", t);
-  const btn = document.getElementById("themeToggle");
-  if (btn) btn.textContent = t === "light" ? "☀ Light" : "🌙 Dark";
-  try { localStorage.setItem("sodTheme", t); } catch (e) {}
-}
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute("data-theme") || "dark";
-  applyTheme(cur === "light" ? "dark" : "light");
-}
-(function initTheme() {
-  let t;
-  try { t = localStorage.getItem("sodTheme"); } catch (e) {}
-  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  applyTheme(t);
-})();
 
 function parseToons(text) {
   return text.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
@@ -596,28 +463,136 @@ function itemVerdict(req, elig) {
   return `<div class="verdict ${cls}" style="margin-top:10px; font-size:14px">${txt}</div>`;
 }
 
-// WCL figure to two decimal places, e.g. 99.50%.
-function fmtPct(v) {
-  return v == null ? "—" : v.toFixed(2) + "%";
+// --- Bulk highest-DPS lookup ---
+const dpsBtn = document.getElementById("dpsBtn");
+const dpsOut = document.getElementById("dpsOut");
+dpsBtn.addEventListener("click", () => runTopDps(false));
+
+let dpsRows = [];
+
+async function runTopDps(force) {
+  const names = [...new Set(parseToons(document.getElementById("dpsNames").value))];
+  if (!names.length) { dpsOut.innerHTML = '<div class="error">Enter at least one toon name.</div>'; return; }
+
+  dpsBtn.disabled = true;
+  dpsRows = [];
+  let done = 0, anyCached = false;
+  const render = () => { dpsOut.innerHTML = renderTopDps(names.length, done, anyCached); };
+  render();
+
+  // Small worker pool so a 40-name paste doesn't stampede Warcraft Logs.
+  const queue = names.slice();
+  const worker = async () => {
+    for (;;) {
+      const name = queue.shift();
+      if (name === undefined) return;
+      try {
+        const res = await fetch("/api/topdps", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+          body: JSON.stringify({ name, force }),
+        });
+        const d = await res.json();
+        if (!res.ok) dpsRows.push({ query: name, error: d.error || "Lookup failed." });
+        else { dpsRows.push(d); if (d.cache && d.cache.cached) anyCached = true; }
+      } catch (e) {
+        dpsRows.push({ query: name, error: "Network error: " + e.message });
+      }
+      done++;
+      render();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, names.length) }, worker));
+  dpsBtn.disabled = false;
 }
 
-// Standard Warcraft Logs parse-percentile colours. The pale dark-theme values
-// wash out on white, so use darkened variants in light mode.
-function parseColor(v) {
-  const light = document.documentElement.getAttribute("data-theme") === "light";
-  if (v == null) return light ? "#647085" : "#9aa4b0";
-  if (v >= 100) return light ? "#a8791a" : "#e5cc80"; // gold
-  if (v >= 99)  return light ? "#c2185b" : "#e268a8"; // pink
-  if (v >= 95)  return light ? "#d15e00" : "#ff8000"; // orange
-  if (v >= 75)  return light ? "#7b1fa2" : "#a335ee"; // purple
-  if (v >= 50)  return light ? "#0059c9" : "#0070ff"; // blue
-  if (v >= 25)  return light ? "#2e8b00" : "#1eff00"; // green
-  return light ? "#647085" : "#9aa4b0";               // grey
-}
+function renderTopDps(total, done, anyCached) {
+  const ranked = dpsRows.filter(r => !r.error && r.found && r.best)
+    .sort((a, b) => b.best.dps - a.best.dps);
+  const misses = dpsRows.filter(r => r.error || !r.found || !r.best);
 
-function escape(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
-    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let html = "";
+  if (done < total) html += `<div class="spin">Checked ${done} of ${total}…</div>`;
+
+  if (ranked.length) {
+    // Boss columns: union across all toons, preserving WCL's zone order.
+    const bosses = [];
+    for (const r of ranked) {
+      for (const b of r.bosses || []) {
+        if (!bosses.includes(b.encounter)) bosses.push(b.encounter);
+      }
+    }
+    // Rank by whole-raid (complete-raid) DPS; toons without one sort after,
+    // by their best single-boss DPS.
+    ranked.sort((a, b) =>
+      ((b.overall ? b.overall.dps : -1) - (a.overall ? a.overall.dps : -1)) ||
+      (b.best.dps - a.best.dps));
+    const rows = ranked.map(r => {
+      const byBoss = {};
+      for (const b of r.bosses || []) byBoss[b.encounter] = b;
+      return { r, byBoss };
+    });
+    html += `<div class="dps-scroll"><table class="dps-table"><thead><tr>
+      <th>Toon</th><th class="r" title="Whole-raid DPS from the guild's complete SE clears">Overall</th>
+      ${bosses.map(b => `<th class="r">${escape(b)}</th>`).join("")}</tr></thead><tbody>`;
+    for (const { r, byBoss } of rows) {
+      const o = r.overall;
+      html += `<tr><td><b>${escape(r.name)}</b>${r.class ? ` <span class="cls">${escape(r.class)}</span>` : ""}</td>`;
+      if (o) {
+        html += `<td class="r" title="complete raid · ${o.raid_size} players">
+          <b>${Math.round(o.dps).toLocaleString()}</b>
+          <div class="cls" style="color:${parseColor(o.rank_percent)}">${fmtPct(o.rank_percent)}</div>
+          <div class="cls">${escape(o.spec || "")} · ${o.size}</div></td>`;
+      } else {
+        html += '<td class="r cls" title="No complete SE clear in the guild\'s logs">—</td>';
+      }
+      for (const name of bosses) {
+        const cell = byBoss[name];
+        if (!cell || cell.dps == null) { html += '<td class="r cls">—</td>'; continue; }
+        html += `<td class="r" title="${escape(cell.spec)} · ${cell.size}-man">
+          <b>${Math.round(cell.dps).toLocaleString()}</b>
+          <div class="cls" style="color:${parseColor(cell.rank_percent)}">${fmtPct(cell.rank_percent)}</div>
+          <div class="cls">${escape(cell.spec)}</div></td>`;
+      }
+      html += "</tr>";
+    }
+    // Footer: who tops each column. Rows are sorted by overall, so the first
+    // with an overall figure tops that column.
+    const topOverall = rows.find(({ r }) => r.overall);
+    html += `</tbody><tfoot><tr><td>Top toon</td>
+      ${topOverall
+        ? `<td class="r"><b>${escape(topOverall.r.name)}</b>
+            <div class="cls">${Math.round(topOverall.r.overall.dps).toLocaleString()}</div></td>`
+        : '<td class="r cls">—</td>'}`;
+    for (const name of bosses) {
+      let top = null;
+      for (const { r, byBoss } of rows) {
+        const cell = byBoss[name];
+        if (cell && cell.dps != null && (!top || cell.dps > top.dps)) {
+          top = { toon: r.name, dps: cell.dps };
+        }
+      }
+      html += top
+        ? `<td class="r"><b>${escape(top.toon)}</b>
+            <div class="cls">${Math.round(top.dps).toLocaleString()}</div></td>`
+        : '<td class="r cls">—</td>';
+    }
+    html += "</tr></tfoot></table></div>";
+  }
+
+  for (const r of misses) {
+    const why = r.error ? escape(r.error)
+      : !r.found ? "Not found on Warcraft Logs — check the spelling / realm."
+      : "Found, but no ranked DPS parses in any spec.";
+    html += `<div class="check"><span class="badge warn">?</span><div class="body">
+      <b>${escape(r.query || r.name)}</b><div class="detail">${why}</div></div></div>`;
+  }
+
+  if (done >= total) {
+    html += `<div class="cacheline"><span>${anyCached ? "some results cached (up to 3 h old)" : "fresh from Warcraft Logs"}</span>
+      <button class="ghost small" onclick="runTopDps(true)">↻ Refresh</button></div>`;
+  }
+  return html;
 }
 </script>
 </body>
