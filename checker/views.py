@@ -9,8 +9,8 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from . import apicache, blizzard, gear, items, roster, wcl
-from .models import ToonLink
+from . import apicache, blizzard, gear, items, roster, softres, wcl
+from .models import SoftresAudit, ToonLink
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,9 @@ def eligibility(request):
     # Only when alts were provided: a bare main submitted without picking the
     # suggestion must not erase a learned link. The submitted cluster replaces
     # any cluster it overlaps with (latest wins, so corrections self-apply).
-    if toons:
+    # The SR audit passes remember=false — its clusters come from us in the
+    # first place, so writing them back would only churn the table.
+    if toons and payload.get("remember", True):
         keys = [roster.fold(t) for t in all_toons]
         stale = [
             link.pk
@@ -359,6 +361,130 @@ def api_report_card(request):
             "reports": listing,
             "card": card,
             "cache": apicache.summarise(metas or []),
+        }
+    )
+
+
+def known_alts(name):
+    """A player's other toons, for attendance counted across the player.
+
+    GRM roster rows win (guildies); remembered ToonLink clusters fill in
+    non-guildies — the same precedence the autosuggest uses."""
+    key = roster.fold(name)
+    if not key:
+        return []
+    for character in roster.characters():
+        if roster.fold(character["name"]) == key:
+            return [a for a in character["alts"] if roster.fold(a) != key]
+    for link in ToonLink.objects.all():
+        if key in link.keys:
+            return [m for i, m in enumerate(link.members) if link.keys[i] != key]
+    return []
+
+
+@password_protected
+def softres_audit(request):
+    response = render(
+        request,
+        "checker/softres.html",
+        {
+            "guild_id": settings.GUILD_ID,
+            "parse_zone_name": settings.PARSE_ZONE_NAME,
+            "parse_threshold": settings.PARSE_THRESHOLD,
+            "weeks_required": settings.WEEKS_REQUIRED,
+            "weeks_window": settings.WEEKS_WINDOW,
+            "recent_audits": SoftresAudit.objects.all()[:10],
+        },
+    )
+    response["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+@require_GET
+@require_page_access
+def api_softres(request):
+    """Fetch a softres.it raid sheet and prepare it for auditing: resolved
+    item names, rule classification per item, and each reserver's known alts.
+
+    Per-toon verdicts come from the existing /api/eligibility endpoint — the
+    page fans out one call per reserve so the rules live in exactly one place."""
+    raid_ref = (request.GET.get("raid") or "").strip()
+    force = request.GET.get("force") == "1"
+    raid_id = softres.parse_raid_id(raid_ref)
+    if not raid_id:
+        return JsonResponse(
+            {"error": "That doesn't look like a softres.it raid URL or ID."},
+            status=400,
+        )
+    try:
+        raid, meta = softres.get_raid(raid_id, force=force)
+    except softres.SoftresError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+
+    instances = raid.get("instances") or []
+    slugs = " ".join(i.get("slug") or "" for i in instances)
+    raid_type = "naxx" if "naxx" in slugs else "se"
+
+    # Remember the sheet so the page can offer recent audits without the RL
+    # hunting the link down again. Re-audits just refresh the entry.
+    SoftresAudit.objects.update_or_create(
+        raid_id=raid.get("id") or raid_id,
+        defaults={
+            "instance": (instances[0].get("name") if instances else "") or "",
+            "raid_date": raid.get("raid_date"),
+            "reserve_count": len(raid.get("reserves") or []),
+        },
+    )
+
+    # Contested = the same item soft-reserved by 2+ different people. Stacking
+    # an item ×3 yourself doesn't contest it. The 4-week attendance rule only
+    # applies to contested NON-TOKEN items (tokens are free for anyone; the
+    # page applies that exemption), so the flag has to ride on each entry.
+    holders = {}
+    for r in raid.get("reserves") or []:
+        for item_id in set(r.get("items") or []):
+            holders[item_id] = holders.get(item_id, 0) + 1
+
+    reserves = []
+    for r in raid.get("reserves") or []:
+        entries = []
+        for item_id in r.get("items") or []:
+            name = softres.item_name(item_id)
+            entries.append(
+                {
+                    "id": item_id,
+                    "name": name,
+                    "type": items.classify(name),
+                    "contested": holders.get(item_id, 0) > 1,
+                }
+            )
+        spec = r.get("spec")
+        reserves.append(
+            {
+                "name": r.get("name"),
+                "spec": spec,
+                "healer": spec in softres.HEALER_SPECS,
+                "discord": (r.get("user") or {}).get("name"),
+                "note": r.get("note"),
+                "alts": known_alts(r.get("name") or ""),
+                "items": entries,
+            }
+        )
+
+    return JsonResponse(
+        {
+            "raid": {
+                "id": raid.get("id"),
+                "instance": instances[0].get("name") if instances else None,
+                "raid_type": raid_type,
+                "faction": raid.get("faction"),
+                "date": raid.get("raid_date"),
+                "locked": raid.get("locked"),
+                "reserve_limit": raid.get("reserve_limit"),
+                "creator": (raid.get("creator") or {}).get("name"),
+            },
+            "reserves": reserves,
+            "cache": apicache.summarise([meta]),
         }
     )
 

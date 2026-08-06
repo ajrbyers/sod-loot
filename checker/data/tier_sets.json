@@ -3,6 +3,7 @@
   "scarlet_enclave": {
     "label": "Scarlet Enclave",
     "token_prefix": "Consecrated",
+    "extra_tokens": ["Crusader's Chalice"],
     "min_pieces": 6,
     "set_ids": [1932, 1933, 1934, 1935, 1936, 1937, 1938, 1939, 1940, 1941, 1942, 1943, 1944, 1945, 1946, 1947, 1948, 1953, 1954, 1963],
     "item_id_band": [239000, 247000],

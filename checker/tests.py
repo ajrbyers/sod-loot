@@ -8,8 +8,8 @@ from unittest import mock
 from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from checker import gear, roster, views, wcl
-from checker.models import ToonLink
+from checker import gear, items, roster, softres, views, wcl
+from checker.models import SoftresAudit, ToonLink
 
 CSV_HEADER = (
     "Name;Rank;Level;Class;Race;Sex;Last Online (Days);Main/Alt;Player Alts;"
@@ -708,12 +708,14 @@ class ReportCardTests(SimpleTestCase):
         self.assertIsNone(metas)
 
 
-class PasswordGateTests(SimpleTestCase):
+# TestCase (not SimpleTestCase): the unlocked /softres page reads the
+# recent-audits list from the database.
+class PasswordGateTests(TestCase):
     def enter_password(self, password="carnage"):
         return self.client.post("/leaderboard", {"password": password})
 
     def test_gated_pages_show_the_password_form(self):
-        for path in ("/leaderboard", "/reports"):
+        for path in ("/leaderboard", "/reports", "/softres"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, 'name="password"')
@@ -732,6 +734,7 @@ class PasswordGateTests(SimpleTestCase):
         self.assertIn(views.PW_COOKIE, response.cookies)
         self.assertContains(self.client.get("/leaderboard"), "Roster Leaderboard")
         self.assertContains(self.client.get("/reports"), "After-Action Reports")
+        self.assertContains(self.client.get("/softres"), "Soft-Reserve Audit")
 
     def test_tampered_cookie_is_ignored(self):
         self.client.cookies[views.PW_COOKIE] = "forged-token"
@@ -741,6 +744,7 @@ class PasswordGateTests(SimpleTestCase):
     def test_apis_refuse_without_the_cookie(self):
         self.assertEqual(self.client.get("/api/leaderboard").status_code, 403)
         self.assertEqual(self.client.get("/api/reportcard").status_code, 403)
+        self.assertEqual(self.client.get("/api/softres").status_code, 403)
 
     def test_apis_work_once_authenticated(self):
         self.enter_password()
@@ -869,7 +873,7 @@ class TopDpsEndpointTests(SimpleTestCase):
         self.assertIn("api down", response.json()["error"])
 
 
-def post_eligibility(client, main, toons):
+def post_eligibility(client, main, toons, **extra):
     """POST an eligibility check with the external APIs stubbed out."""
     parse = (
         {
@@ -897,7 +901,7 @@ def post_eligibility(client, main, toons):
     ):
         return client.post(
             "/api/eligibility",
-            json.dumps({"main": main, "toons": toons}),
+            json.dumps({"main": main, "toons": toons, **extra}),
             content_type="application/json",
         )
 
@@ -961,3 +965,198 @@ class ToonLinkTests(TestCase):
         self.assertEqual(names.count("Cameroncrown"), 1)
         self.assertEqual(data["matches"][0]["alts"], ["Grmalt"])
         self.assertNotIn("remembered", data["matches"][0])
+
+    def test_remember_false_leaves_the_link_table_untouched(self):
+        # The SR audit checks whole rosters; it must not write clusters back.
+        response = post_eligibility(
+            self.client, "Newpug", ["Newalt"], remember=False
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(
+            ToonLink.objects.filter(keys__icontains="newpug").exists()
+        )
+
+
+class SoftresHelperTests(SimpleTestCase):
+    def test_parse_raid_id_accepts_a_bare_id(self):
+        self.assertEqual(softres.parse_raid_id(" 9b69QNaE "), "9b69QNaE")
+
+    def test_parse_raid_id_accepts_softres_urls(self):
+        for text in (
+            "https://softres.it/raid/9b69QNaE",
+            "softres.it/raid/9b69QNaE/",
+            "https://softres.it/raid/9b69QNaE?foo=1",
+        ):
+            self.assertEqual(softres.parse_raid_id(text), "9b69QNaE", text)
+
+    def test_parse_raid_id_rejects_garbage(self):
+        for text in ("", "   ", "not a raid id", "https://example.com/raid/abc!!!"):
+            self.assertIsNone(softres.parse_raid_id(text), text)
+
+    def test_classify_covers_all_three_tiers(self):
+        self.assertEqual(items.classify("Abandoned Experiment"), "rare")
+        self.assertEqual(items.classify("Putress' Completed Diary"), "rare")
+        self.assertEqual(items.classify("consecrated gauntlets"), "token")
+        self.assertEqual(items.classify("Desecrated Bindings"), "token")
+        self.assertEqual(items.classify("Scarlet Steed"), "standard")
+        self.assertIsNone(items.classify(None))
+        self.assertIsNone(items.classify("  "))
+
+    def test_extra_tokens_count_as_tokens(self):
+        # House rule: Crusader's Chalice is a token despite the name.
+        self.assertEqual(items.classify("Crusader's Chalice"), "token")
+        result = items.search("chalice")
+        self.assertEqual(result["item_type"], "token")
+        self.assertEqual(result["token_raid"], "se")
+
+
+# A softres sheet as /api/raid/<id> returns it: one melee stacking a rare ×2
+# and holding a token that the healer also wants (contested), one healer with
+# an item Wowhead can't resolve.
+SOFTRES_RAID = {
+    "id": "9b69QNaE",
+    "faction": "alliance",
+    "locked": False,
+    "reserve_limit": 3,
+    "raid_date": 1786042800,
+    "creator": {"id": 1, "name": "dread_ful"},
+    "instances": [{"slug": "scarletenclavesod", "name": "Scarlet Enclave"}],
+    "reserves": [
+        {
+            "name": "Boliath",
+            "spec": 254,
+            "note": None,
+            "items": [111, 111, 222],
+            "user": {"name": ".czeq"},
+        },
+        {
+            "name": "Compostel",
+            "spec": 257,
+            "note": "healer",
+            "items": [333, 222],
+            "user": None,
+        },
+    ],
+}
+SOFTRES_ITEM_NAMES = {111: "Abandoned Experiment", 222: "Consecrated Gauntlets"}
+
+
+@override_settings(ROSTER_FILE="/nonexistent/grm.csv")
+class SoftresEndpointTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        ToonLink.objects.create(
+            members=["Boliath", "Bolialt"], keys=["boliath", "bolialt"]
+        )
+
+    def setUp(self):
+        self.client.post("/softres", {"password": "carnage"})
+
+    def fetch(self, raid="9b69QNaE"):
+        meta = {"cached": False, "age": 0, "ttl": 300}
+        with mock.patch.object(
+            softres, "get_raid", return_value=(SOFTRES_RAID, meta)
+        ), mock.patch.object(
+            softres, "item_name", side_effect=SOFTRES_ITEM_NAMES.get
+        ):
+            return self.client.get("/api/softres", {"raid": raid})
+
+    def test_requires_the_password_cookie(self):
+        from django.test import Client
+
+        self.assertEqual(Client().get("/api/softres").status_code, 403)
+
+    def test_reserves_carry_names_types_alts_and_healer_flag(self):
+        data = self.fetch().json()
+        self.assertEqual(data["raid"]["raid_type"], "se")
+        self.assertEqual(data["raid"]["instance"], "Scarlet Enclave")
+        self.assertEqual(data["raid"]["creator"], "dread_ful")
+
+        melee, healer = data["reserves"]
+        self.assertEqual(melee["name"], "Boliath")
+        self.assertFalse(melee["healer"])
+        self.assertEqual(melee["discord"], ".czeq")
+        # Remembered link supplies the alt for player-wide attendance.
+        self.assertEqual(melee["alts"], ["Bolialt"])
+        self.assertEqual(
+            [(i["name"], i["type"]) for i in melee["items"]],
+            [
+                ("Abandoned Experiment", "rare"),
+                ("Abandoned Experiment", "rare"),
+                ("Consecrated Gauntlets", "token"),
+            ],
+        )
+        # Stacking an item ×2 yourself doesn't contest it; sharing one with
+        # another reserver does.
+        self.assertEqual([i["contested"] for i in melee["items"]], [False, False, True])
+
+        self.assertTrue(healer["healer"])  # spec 257 = holy priest
+        # Unresolvable item degrades to name/type None, not an error.
+        self.assertEqual(
+            healer["items"][0],
+            {"id": 333, "name": None, "type": None, "contested": False},
+        )
+        self.assertTrue(healer["items"][1]["contested"])
+
+    def test_accepts_a_full_softres_url(self):
+        response = self.fetch(raid="https://softres.it/raid/9b69QNaE")
+        self.assertEqual(response.status_code, 200)
+
+    def test_unparseable_reference_is_a_400(self):
+        response = self.client.get("/api/softres", {"raid": "not a raid id"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_fetch_upserts_the_recent_audit_list(self):
+        self.fetch()
+        self.fetch()
+        audits = SoftresAudit.objects.filter(raid_id="9b69QNaE")
+        self.assertEqual(audits.count(), 1)
+        audit = audits.get()
+        self.assertEqual(audit.instance, "Scarlet Enclave")
+        self.assertEqual(audit.reserve_count, 2)
+        self.assertEqual(audit.raid_date, 1786042800)
+
+    def test_page_lists_recent_audits(self):
+        SoftresAudit.objects.create(
+            raid_id="oldRaid1", instance="Naxxramas", reserve_count=25
+        )
+        response = self.client.get("/softres")
+        self.assertContains(response, "oldRaid1")
+        self.assertContains(response, "Naxxramas")
+
+    def test_softres_failure_maps_to_502(self):
+        with mock.patch.object(
+            softres, "get_raid", side_effect=softres.SoftresError("softres down")
+        ):
+            response = self.client.get("/api/softres", {"raid": "9b69QNaE"})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("softres down", response.json()["error"])
+
+
+@override_settings(ROSTER_FILE="/nonexistent/grm.csv")
+class KnownAltsTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        ToonLink.objects.create(
+            members=["Cameroncrown", "Magvirgo"], keys=["cameroncrown", "magvirgo"]
+        )
+
+    def test_roster_row_wins_and_excludes_self(self):
+        chars = [
+            {
+                "name": "Shapíe",
+                "level": "60",
+                "class": "Druid",
+                "main_or_alt": "Main",
+                "alts": ["Shapíe", "Akabow"],
+            }
+        ]
+        with mock.patch.object(roster, "characters", return_value=chars):
+            self.assertEqual(views.known_alts("shapie"), ["Akabow"])
+
+    def test_falls_back_to_remembered_links(self):
+        self.assertEqual(views.known_alts("MAGVIRGO"), ["Cameroncrown"])
+
+    def test_unknown_name_has_no_alts(self):
+        self.assertEqual(views.known_alts("Stranger"), [])
+        self.assertEqual(views.known_alts(""), [])

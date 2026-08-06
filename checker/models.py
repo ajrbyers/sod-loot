@@ -2,6 +2,23 @@
 from django.db import models
 
 
+class SoftresAudit(models.Model):
+    """A softres raid sheet the audit page has fetched, so raid leads can
+    re-run recent checks without hunting down the link again."""
+
+    raid_id = models.CharField(max_length=32, unique=True)
+    instance = models.CharField(max_length=64, blank=True)
+    raid_date = models.BigIntegerField(null=True, blank=True)
+    reserve_count = models.IntegerField(default=0)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated"]
+
+    def __str__(self):
+        return f"{self.raid_id} ({self.instance})"
+
+
 class ToonLink(models.Model):
     """A cluster of toons the checker has learned belong to one player.
 

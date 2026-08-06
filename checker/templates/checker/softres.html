@@ -1,0 +1,274 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SR Audit · Guild {{ guild_id }}</title>
+{% include "checker/_style.html" %}
+</head>
+<body>
+{% include "checker/_chrome.html" %}
+<div class="wrap">
+  <header>
+    <h1>📋 Soft-Reserve Audit</h1>
+    <p>Paste a softres.it raid link (or ID) and every reserve is checked against our rules:
+       tokens are free for anyone; contested items (SR'd by 2+ people) need
+       {{ weeks_required }}/{{ weeks_window }} weeks attendance, standard items need the tier
+       set bonus, rare items add a {{ parse_threshold }}%+ parse and full enchants.</p>
+  </header>
+
+  <div class="card">
+    <label for="srInput">Softres raid URL or ID</label>
+    <input type="text" id="srInput" placeholder="https://softres.it/raid/9b69QNaE" autocomplete="off">
+    <div class="recent" id="recentList" {% if not recent_audits %}hidden{% endif %}>
+      <span class="lbl">Recent audits:</span>
+      {% for a in recent_audits %}
+      <a href="#" class="pill recent-pill" data-raid="{{ a.raid_id }}">{{ a.instance|default:"Unknown" }}
+        · <span class="ts" data-ts="{{ a.raid_date|default_if_none:"" }}"></span>
+        · {{ a.reserve_count }} SRs</a>
+      {% endfor %}
+    </div>
+    <button id="srGo" onclick="runAudit(false)">Audit reserves</button>
+    <div id="srOut" class="result"></div>
+  </div>
+
+  <footer>Reserves come live from softres.it (cached 5 minutes); verdicts use the same
+    Warcraft&nbsp;Logs + armory checks as the main checker.</footer>
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+const srOut = document.getElementById("srOut");
+const recentList = document.getElementById("recentList");
+const srInput = document.getElementById("srInput");
+srInput.addEventListener("keydown", e => { if (e.key === "Enter") runAudit(false); });
+
+// Recent audits: dates arrive as epoch seconds; format them client-side so
+// the template stays timezone-agnostic. Clicking a pill re-runs that audit.
+document.querySelectorAll("#recentList .ts").forEach(el => {
+  el.textContent = el.dataset.ts ? fmtDate(+el.dataset.ts) : "—";
+});
+recentList.addEventListener("click", e => {
+  const pill = e.target.closest(".recent-pill");
+  if (!pill) return;
+  e.preventDefault();
+  srInput.value = pill.dataset.raid;
+  runAudit(false);
+});
+
+// Keep the list current after a fresh audit without a reload.
+function noteRecent(raid, reserveCount) {
+  recentList.hidden = false;
+  recentList.querySelectorAll(`[data-raid="${CSS.escape(raid.id)}"]`).forEach(el => el.remove());
+  const pill = document.createElement("a");
+  pill.className = "pill recent-pill";
+  pill.href = "#";
+  pill.dataset.raid = raid.id;
+  pill.innerHTML = `${escape(raid.instance || "Unknown")} · ${fmtDate(raid.date)} · ${reserveCount} SRs`;
+  recentList.insertBefore(pill, recentList.children[1] || null);
+}
+
+const TYPE_LABEL = { rare: "rare", token: "token", standard: "std" };
+const TYPE_CLASS = { rare: "rare", token: "tok", standard: "std" };
+
+function fmtDate(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString(undefined,
+    { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "—";
+}
+
+// Group a reserve's items so "241038 ×3" renders once, not three times.
+function groupItems(items) {
+  const seen = new Map();
+  items.forEach(it => {
+    const k = String(it.id);
+    if (seen.has(k)) seen.get(k).count += 1;
+    else seen.set(k, { ...it, count: 1 });
+  });
+  return [...seen.values()];
+}
+
+// Tokens are always free — anyone can SR one. Attendance only gates
+// CONTESTED non-token items; set bonus gates standard+rare; parse and
+// enchants gate rare.
+function itemVerdict(it, e) {
+  if (!it.name || !it.type || !e) return "warn";
+  if (it.type === "token") return "pass";
+  const checks = [];
+  if (it.contested) checks.push(e.attendance.passed);
+  if (it.type !== "token") checks.push(e.set_bonus_ok);
+  if (it.type === "rare") {
+    checks.push(e.parse.passed);
+    if (e.enchants.verified) checks.push(e.enchants.fully_enchanted);
+  }
+  if (checks.some(c => !c)) return "fail";
+  // Passing but with gear unverifiable (armory miss) is a "check by hand" —
+  // only relevant where gear actually gates the item.
+  if (it.type !== "token" && !(e.gear && e.gear.available)) return "warn";
+  return "pass";
+}
+
+function verdictBadge(v) {
+  return v === "pass" ? '<span class="badge ok">✓</span>'
+       : v === "fail" ? '<span class="badge no">✗</span>'
+       : '<span class="badge warn">?</span>';
+}
+
+function itemChips(reserve, e) {
+  return groupItems(reserve.items).map(it => {
+    const type = it.type;
+    const tag = type
+      ? `<span class="tag ${TYPE_CLASS[type]}">${TYPE_LABEL[type]}</span>`
+      : '<span class="tag std">?</span>';
+    const name = it.name ? escape(it.name) : `item ${escape(it.id)} <span class="cls">(unresolved)</span>`;
+    const contested = it.contested && it.type !== "token"
+      ? ' <span title="contested — attendance rule applies">⚔</span>' : "";
+    const badge = e === undefined ? "" : " " + verdictBadge(itemVerdict(it, e));
+    return `<div>${tag} ${name}${contested}${it.count > 1 ? ` <span class="cls">×${it.count}</span>` : ""}${badge}</div>`;
+  }).join("");
+}
+
+function needs(reserve) {
+  const types = reserve.items.map(i => i.type);
+  return {
+    attendance: reserve.items.some(i => i.contested && i.type !== "token"),
+    setBonus: types.some(t => t === "standard" || t === "rare" || t === null),
+    parse: types.some(t => t === "rare" || t === null),
+  };
+}
+
+function reqCell(pass, text, { needed = true, verified = true } = {}) {
+  if (!needed) return '<td class="r cls">n/a</td>';
+  if (!verified) return '<td class="r"><span class="badge warn">unverified</span></td>';
+  return `<td class="r"><span class="badge ${pass ? "ok" : "no"}">${text}</span></td>`;
+}
+
+function renderRow(i, reserve, e, error) {
+  const row = document.getElementById(`sr-row-${i}`);
+  if (!row) return;
+  const need = needs(reserve);
+  let cells = `<td><b>${escape(reserve.name)}</b>
+    <div class="cls">${escape(reserve.discord || "")}${reserve.alts.length
+      ? ` · with ${escape(reserve.alts.join(", "))}` : ""}</div>
+    ${reserve.note ? `<div class="cls">“${escape(reserve.note)}”</div>` : ""}</td>`;
+
+  if (error) {
+    row.innerHTML = cells + `<td>${itemChips(reserve)}</td>
+      <td colspan="4" class="cls">${escape(error)}</td>
+      <td class="r"><span class="badge warn">retry</span></td>`;
+    return;
+  }
+
+  cells += `<td>${itemChips(reserve, e)}</td>`;
+  const a = e.attendance;
+  cells += reqCell(a.passed, `${a.distinct_weeks}/${a.required} wks`,
+    { needed: need.attendance });
+  const gearOk = e.gear && e.gear.available;
+  cells += reqCell(e.set_bonus_ok,
+    gearOk ? `${e.gear.set_bonus.count}/${e.gear.set_bonus.need}` : "",
+    { needed: need.setBonus, verified: gearOk });
+  const best = e.parse.best_average;
+  cells += reqCell(best != null && best >= e.parse.threshold,
+    `${best != null ? best.toFixed(1) : "—"}% ${e.parse.metric}`,
+    { needed: need.parse });
+  cells += reqCell(e.enchants.fully_enchanted,
+    e.enchants.fully_enchanted ? "✓" : `${e.enchants.missing.length} missing`,
+    { needed: need.parse, verified: e.enchants.verified });
+
+  const verdicts = reserve.items.map(it => itemVerdict(it, e));
+  const overall = verdicts.includes("fail") ? "fail"
+    : verdicts.includes("warn") ? "warn" : "pass";
+  cells += `<td class="r"><span class="badge ${overall === "pass" ? "ok" : overall === "fail" ? "no" : "warn"}">
+    ${overall === "pass" ? "LEGIT" : overall === "fail" ? "NOT OK" : "CHECK"}</span></td>`;
+  row.innerHTML = cells;
+}
+
+function contestedBlock(reserves) {
+  const byItem = new Map();
+  reserves.forEach(r => groupItems(r.items).forEach(it => {
+    const k = String(it.id);
+    if (!byItem.has(k)) byItem.set(k, { ...it, holders: [] });
+    byItem.get(k).holders.push(r.name + (it.count > 1 ? ` ×${it.count}` : ""));
+  }));
+  const contested = [...byItem.values()].filter(it => it.holders.length > 1)
+    .sort((a, b) => b.holders.length - a.holders.length);
+  if (!contested.length) return "";
+  return `<div class="check"><div class="body"><b>Contested items</b>
+    <div class="detail">${contested.map(it =>
+      `${it.name ? escape(it.name) : "item " + escape(it.id)} — ${escape(it.holders.join(", "))}`
+    ).join("<br>")}</div></div></div>`;
+}
+
+async function pool(tasks, width) {
+  const queue = [...tasks];
+  await Promise.all(Array.from({ length: width }, async () => {
+    while (queue.length) await queue.shift()();
+  }));
+}
+
+async function checkReserve(raidType, reserve, i) {
+  try {
+    const res = await fetch("/api/eligibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+      body: JSON.stringify({
+        main: reserve.name,
+        toons: reserve.alts,
+        raid: raidType,
+        metric: reserve.healer ? "hps" : "dps",
+        remember: false,
+      }),
+    });
+    const e = await res.json();
+    if (!res.ok) { renderRow(i, reserve, null, e.error || "Check failed."); return; }
+    renderRow(i, reserve, e);
+  } catch (err) {
+    renderRow(i, reserve, null, "Network error: " + err.message);
+  }
+}
+
+async function runAudit(force) {
+  const q = srInput.value.trim();
+  if (!q) { srOut.innerHTML = '<div class="error">Paste a softres raid URL or ID first.</div>'; return; }
+  document.getElementById("srGo").disabled = true;
+  srOut.innerHTML = '<div class="spin">Fetching reserves from softres.it…</div>';
+  try {
+    const res = await fetch(`/api/softres?raid=${encodeURIComponent(q)}${force ? "&force=1" : ""}`);
+    const d = await res.json();
+    if (!res.ok) { srOut.innerHTML = `<div class="error">${escape(d.error || "Something went wrong.")}</div>`; return; }
+
+    const r = d.raid;
+    noteRecent(r, d.reserves.length);
+    let html = `<div class="check"><div class="body">
+      <b>${escape(r.instance || "Unknown instance")}</b> · ${fmtDate(r.date)} ·
+      ${d.reserves.length} reserves · limit ${r.reserve_limit}/person ·
+      by ${escape(r.creator || "?")}${r.locked ? " · 🔒 locked" : ""}
+      </div></div>`;
+    html += contestedBlock(d.reserves);
+    html += `<div class="dps-scroll"><table class="dps-table"><thead><tr>
+      <th>Toon</th><th>Reserved</th><th class="r">Attendance</th><th class="r">Set bonus</th>
+      <th class="r">Parse</th><th class="r">Enchants</th><th class="r">Verdict</th>
+      </tr></thead><tbody>`;
+    d.reserves.forEach((reserve, i) => {
+      html += `<tr id="sr-row-${i}"><td><b>${escape(reserve.name)}</b></td>
+        <td>${itemChips(reserve)}</td>
+        <td colspan="5" class="cls"><span class="spin">checking…</span></td></tr>`;
+    });
+    html += "</tbody></table></div>";
+    const c = d.cache || {};
+    const m = Math.floor((c.age_seconds || 0) / 60);
+    html += `<div class="cacheline"><span>${c.cached
+      ? (m < 1 ? "reserves cached just now" : `reserves cached ${m} min ago`)
+      : "reserves fresh from softres.it"}</span>
+      <button class="ghost small" onclick="runAudit(true)">↻ Refresh</button></div>`;
+    srOut.innerHTML = html;
+
+    await pool(d.reserves.map((reserve, i) => () => checkReserve(r.raid_type, reserve, i)), 4);
+  } catch (e) {
+    srOut.innerHTML = `<div class="error">Network error: ${escape(e.message)}</div>`;
+  } finally {
+    document.getElementById("srGo").disabled = false;
+  }
+}
+</script>
+</body>
+</html>

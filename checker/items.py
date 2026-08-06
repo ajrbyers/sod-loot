@@ -24,6 +24,18 @@ def _token_prefixes():
     }
 
 
+@functools.lru_cache(maxsize=1)
+def _token_names():
+    """Exact item names ruled to be tokens despite lacking the prefix
+    (e.g. Crusader's Chalice). Lowercased name -> which raid's token."""
+    cfg = json.loads(TIERS_FILE.read_text())
+    return {
+        name.lower(): raid
+        for key, raid in (("scarlet_enclave", "se"), ("naxxramas", "naxx"))
+        for name in cfg[key].get("extra_tokens", [])
+    }
+
+
 def all_items():
     return _catalogue()
 
@@ -43,6 +55,21 @@ def _requirements(item_type):
     }
 
 
+def classify(name):
+    """Classify an exact item name under the loot rules: 'rare' (curated
+    list) > 'token' (Consecrated/Desecrated) > 'standard'. None for no name."""
+    n = (name or "").strip().lower()
+    if not n:
+        return None
+    if any(it["name"].lower() == n for it in _catalogue()):
+        return "rare"
+    if n in _token_names():
+        return "token"
+    if any(n.startswith(prefix) for prefix in _token_prefixes()):
+        return "token"
+    return "standard"
+
+
 def search(query):
     q = (query or "").strip().lower()
     if not q:
@@ -56,6 +83,11 @@ def search(query):
         if q.startswith(prefix) or prefix in q:
             token_raid = raid
             break
+    if token_raid is None:
+        for name, raid in _token_names().items():
+            if q in name:
+                token_raid = raid
+                break
 
     if matches:
         item_type = "rare"
