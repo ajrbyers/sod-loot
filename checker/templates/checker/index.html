@@ -163,12 +163,10 @@ function renderEligibility(d) {
   } else if (d.standard_item_eligible) {
     overall = "warn";
     overallText = `➖ ${escape(d.enquiring_toon)} can SR standard (non-token) loot, but not rare items.`;
-  } else if (d.token_eligible) {
-    overall = "warn";
-    overallText = `➖ ${escape(d.enquiring_toon)} can only SR tokens (${d.raid === "naxx" ? "Desecrated" : "Consecrated"} …) — not other items.`;
   } else {
-    overall = "fail";
-    overallText = `✖ ${escape(d.enquiring_toon)} is not currently eligible.`;
+    // Tokens are always SR-able, so this is the floor, not a failure.
+    overall = "warn";
+    overallText = `➖ ${escape(d.enquiring_toon)} can only SR tokens (${d.raid === "naxx" ? "Desecrated" : "Consecrated"} …) — needs the tier set bonus for other loot.`;
   }
   html += `<div class="verdict ${overall}">${overallText}${reasonTxt}</div>`;
 

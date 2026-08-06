@@ -237,10 +237,10 @@ def eligibility(request):
             "missing": gear_block.get("missing_enchants", []),
         },
         "set_bonus_ok": set_ok,
-        # Tokens (Consecrated/Desecrated) only need attendance.
-        "token_eligible": attendance_ok,
-        # Standard NON-TOKEN items need attendance + the tier set bonus.
-        "standard_item_eligible": attendance_ok and set_ok,
+        # Tokens (Consecrated/Desecrated) are SR-able by anyone, no checks.
+        "token_eligible": True,
+        # Standard NON-TOKEN items need the tier set bonus only.
+        "standard_item_eligible": set_ok,
         # RARE (75%+) items need parse + attendance + fully enchanted + set bonus.
         "rare_item_eligible": parse_ok and attendance_ok and enchant_ok and set_ok,
         "cache": apicache.summarise([parse_meta, attend_meta, gear_meta]),
@@ -437,9 +437,8 @@ def api_softres(request):
     )
 
     # Contested = the same item soft-reserved by 2+ different people. Stacking
-    # an item ×3 yourself doesn't contest it. The 4-week attendance rule only
-    # applies to contested NON-TOKEN items (tokens are free for anyone; the
-    # page applies that exemption), so the flag has to ride on each entry.
+    # an item ×3 yourself doesn't contest it. Informational only — it shows
+    # the RL who's rolling against whom; the loot rules key off item type.
     holders = {}
     for r in raid.get("reserves") or []:
         for item_id in set(r.get("items") or []):

@@ -12,9 +12,9 @@
   <header>
     <h1>📋 Soft-Reserve Audit</h1>
     <p>Paste a softres.it raid link (or ID) and every reserve is checked against our rules:
-       tokens are free for anyone; contested items (SR'd by 2+ people) need
-       {{ weeks_required }}/{{ weeks_window }} weeks attendance, standard items need the tier
-       set bonus, rare items add a {{ parse_threshold }}%+ parse and full enchants.</p>
+       tokens are free for anyone; standard items need the tier set bonus; rare items need
+       {{ weeks_required }}/{{ weeks_window }} weeks attendance, a {{ parse_threshold }}%+ parse,
+       full enchants and the set bonus. ⚔ marks contested items (SR'd by 2+ people).</p>
   </header>
 
   <div class="card">
@@ -87,17 +87,15 @@ function groupItems(items) {
   return [...seen.values()];
 }
 
-// Tokens are always free — anyone can SR one. Attendance only gates
-// CONTESTED non-token items; set bonus gates standard+rare; parse and
-// enchants gate rare.
+// Tokens are always free — anyone can SR one. Standard items need the tier
+// set bonus; rare items add attendance, parse and enchants. Contested (⚔)
+// is informational only: it shows who you're rolling against.
 function itemVerdict(it, e) {
   if (!it.name || !it.type || !e) return "warn";
   if (it.type === "token") return "pass";
-  const checks = [];
-  if (it.contested) checks.push(e.attendance.passed);
-  if (it.type !== "token") checks.push(e.set_bonus_ok);
+  const checks = [e.set_bonus_ok];
   if (it.type === "rare") {
-    checks.push(e.parse.passed);
+    checks.push(e.attendance.passed, e.parse.passed);
     if (e.enchants.verified) checks.push(e.enchants.fully_enchanted);
   }
   if (checks.some(c => !c)) return "fail";
@@ -120,8 +118,8 @@ function itemChips(reserve, e) {
       ? `<span class="tag ${TYPE_CLASS[type]}">${TYPE_LABEL[type]}</span>`
       : '<span class="tag std">?</span>';
     const name = it.name ? escape(it.name) : `item ${escape(it.id)} <span class="cls">(unresolved)</span>`;
-    const contested = it.contested && it.type !== "token"
-      ? ' <span title="contested — attendance rule applies">⚔</span>' : "";
+    const contested = it.contested
+      ? ' <span title="contested — others reserved this too">⚔</span>' : "";
     const badge = e === undefined ? "" : " " + verdictBadge(itemVerdict(it, e));
     return `<div>${tag} ${name}${contested}${it.count > 1 ? ` <span class="cls">×${it.count}</span>` : ""}${badge}</div>`;
   }).join("");
@@ -130,7 +128,7 @@ function itemChips(reserve, e) {
 function needs(reserve) {
   const types = reserve.items.map(i => i.type);
   return {
-    attendance: reserve.items.some(i => i.contested && i.type !== "token"),
+    attendance: types.some(t => t === "rare" || t === null),
     setBonus: types.some(t => t === "standard" || t === "rare" || t === null),
     parse: types.some(t => t === "rare" || t === null),
   };

@@ -23,8 +23,9 @@ RAID_TTL = 300
 ITEM_TTL = 30 * 24 * 3600
 
 # softres.it stores retail spec ids. Healing specs get their parses checked
-# against HPS rather than DPS.
-HEALER_SPECS = {65, 105, 256, 257, 264}
+# against HPS rather than DPS. Holy paladin (65) is deliberately absent:
+# in SoD ours are shockadins, so their damage parse is the one that counts.
+HEALER_SPECS = {105, 256, 257, 264}
 
 _ID_RE = re.compile(r"^[A-Za-z0-9]{4,20}$")
 _URL_RE = re.compile(r"softres\.it/raid/([A-Za-z0-9]{4,20})", re.IGNORECASE)

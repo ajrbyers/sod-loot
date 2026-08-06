@@ -906,6 +906,20 @@ def post_eligibility(client, main, toons, **extra):
         )
 
 
+class EligibilityFlagTests(SimpleTestCase):
+    """The composite verdict flags encode the loot rules: tokens for anyone,
+    set bonus for standard, the full battery for rare."""
+
+    def test_flags_with_failing_attendance(self):
+        # Stubbed fixture: parse 80% (passes), 0 attendance weeks, no armory.
+        d = post_eligibility(self.client, "Newpug", []).json()
+        self.assertTrue(d["token_eligible"])
+        # Gear unverifiable doesn't block standard loot (it's flagged instead).
+        self.assertTrue(d["standard_item_eligible"])
+        # Rare still requires the 4 weeks.
+        self.assertFalse(d["rare_item_eligible"])
+
+
 @override_settings(ROSTER_FILE="/nonexistent/grm.csv")
 class ToonLinkTests(TestCase):
     @classmethod
@@ -1001,6 +1015,26 @@ class SoftresHelperTests(SimpleTestCase):
         self.assertEqual(items.classify("Scarlet Steed"), "standard")
         self.assertIsNone(items.classify(None))
         self.assertIsNone(items.classify("  "))
+
+    def test_requirements_follow_the_loot_rules(self):
+        # Tokens: nothing. Standard: set bonus. Rare: everything.
+        self.assertEqual(
+            items.search("Consecrated Gauntlets")["requires"],
+            {"attendance": False, "set_bonus": False, "parse": False, "enchants": False},
+        )
+        self.assertEqual(
+            items.search("Some Random Blue")["requires"],
+            {"attendance": False, "set_bonus": True, "parse": False, "enchants": False},
+        )
+        self.assertEqual(
+            items.search("Abandoned Experiment")["requires"],
+            {"attendance": True, "set_bonus": True, "parse": True, "enchants": True},
+        )
+
+    def test_holy_paladins_are_checked_as_dps(self):
+        # House rule: our holy paladins are shockadins — damage parse counts.
+        self.assertNotIn(65, softres.HEALER_SPECS)
+        self.assertIn(257, softres.HEALER_SPECS)  # holy priests still heal
 
     def test_extra_tokens_count_as_tokens(self):
         # House rule: Crusader's Chalice is a token despite the name.

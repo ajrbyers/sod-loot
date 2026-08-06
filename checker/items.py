@@ -43,12 +43,12 @@ def all_items():
 def _requirements(item_type):
     """What a toon needs to SR an item of this type.
 
-    * token    -> attendance only (always SR-able).
-    * standard -> attendance + tier set bonus (non-token).
-    * rare     -> parse + attendance + fully enchanted + set bonus.
+    * token    -> nothing (SR-able by anyone).
+    * standard -> tier set bonus (non-token).
+    * rare     -> attendance + parse + fully enchanted + set bonus.
     """
     return {
-        "attendance": True,
+        "attendance": item_type == "rare",
         "set_bonus": item_type in ("standard", "rare"),
         "parse": item_type == "rare",
         "enchants": item_type == "rare",
