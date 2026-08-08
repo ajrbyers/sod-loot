@@ -776,6 +776,30 @@ def get_complete_raid_best(name, force=False):
 _ROLE_LABELS = {"tanks": "Tank", "healers": "Healer", "dps": "DPS"}
 
 
+def _is_shockadin(class_name, best_dps, best_hps):
+    """Is this healer-bucketed paladin actually a damage dealer?
+
+    Warcraft Logs groups by retail role, so every Holy paladin lands in the
+    healers block. In SoD ours are shockadins — Holy Shock damage — and their
+    damage figures are the ones that count, the same call softres.HEALER_SPECS
+    makes by omitting Holy paladin (65). Comparing damage against healing keeps
+    the handful of genuine Holy healers where they belong: shockadins parse
+    thousands of DPS against a few hundred incidental HPS, real healers do
+    essentially no damage at all.
+    """
+    if (class_name or "") != "Paladin":
+        return False
+    return (best_dps or 0) > (best_hps or 0)
+
+
+def _shockadin_spec(spec):
+    """Holy, on a paladin we've ruled a damage dealer, reads as Shockadin.
+
+    Only "Holy" is rewritten: shockadins who logged a fight as Retribution
+    must keep that label."""
+    return "Shockadin" if spec == "Holy" else spec
+
+
 def raid_date(raid):
     """A raid's start as YYYY-MM-DD (UTC)."""
     import datetime as dt
@@ -904,6 +928,25 @@ def _aggregate_leaderboard():
         cluster.update(roster.fold(a) for a in character["alts"])
         clusters[roster.fold(character["name"])] = cluster
 
+    # Shockadins are counted as healers on every fight WCL bucketed them there;
+    # re-attribute those to the DPS so the standings rank them on the damage
+    # they actually did. Their best_hps stays — the healing is real, it just no
+    # longer decides their role.
+    for row in players.values():
+        best_dps = max(
+            (row["overall"] or {}).get("dps") or 0,
+            (row["best_boss"] or {}).get("dps") or 0,
+        )
+        best_hps = (row["best_hps"] or {}).get("hps") or 0
+        if not _is_shockadin(row["class"], best_dps, best_hps):
+            continue
+        healer_fights = row["roles"].pop("healers", 0)
+        if healer_fights:
+            row["roles"]["dps"] = row["roles"].get("dps", 0) + healer_fights
+        for block in (row["overall"], row["best_boss"]):
+            if block:
+                block["spec"] = _shockadin_spec(block["spec"])
+
     out = []
     for row in players.values():
         role = max(row["roles"], key=row["roles"].get) if row["roles"] else None
@@ -1023,6 +1066,31 @@ def get_report_card(code, force=False):
             cell = p["cells"].setdefault(str(fid), {})
             cell["hps"] = c.get("amount")
             cell["hps_percent"] = c.get("rankPercent")
+
+    # Shockadins sit in the healers bucket until both sweeps have run — only
+    # then are their damage and healing both known, so only then can they be
+    # told apart from the genuine Holy healers and moved across to the DPS.
+    healers = roles.get("healers", {})
+    for key, p in list(healers.items()):
+        cells = p["cells"].values()
+        best_dps = max((c.get("dps") or 0) for c in cells) if p["cells"] else 0
+        best_hps = max((c.get("hps") or 0) for c in cells) if p["cells"] else 0
+        if not _is_shockadin(p.get("class"), best_dps, best_hps):
+            continue
+        p["spec"] = _shockadin_spec(p["spec"])
+        for cell in p["cells"].values():
+            if "spec" in cell:
+                cell["spec"] = _shockadin_spec(cell["spec"])
+        del healers[key]
+        # They may already hold a DPS row from fights WCL bucketed differently;
+        # a character is only ever in one role block per fight, so folding the
+        # cells together cannot drop any.
+        existing = roles.setdefault("dps", {}).get(key)
+        if existing is None:
+            roles["dps"][key] = p
+        else:
+            for fid, cell in p["cells"].items():
+                existing["cells"].setdefault(fid, {}).update(cell)
 
     fights = bosses + ([overall_fight] if overall_fight else [])
     overall_key = str(_COMPLETE_RAID_FIGHT_ID)

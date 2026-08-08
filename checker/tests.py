@@ -708,6 +708,145 @@ class ReportCardTests(SimpleTestCase):
         self.assertIsNone(metas)
 
 
+# Shockadin fixture. WCL files every Holy paladin under `healers`, so all three
+# paladins below arrive in that bucket:
+#   Shockà    — thousands of DPS, token healing        -> a shockadin
+#   Realheal  — no damage to speak of, real healing    -> a genuine Holy healer
+#   Dualbuck  — bucketed dps on one fight, healers on  -> one merged DPS row
+#               another
+SHOCKADIN_RANKINGS = {
+    ("SHOCK", "dps"): {
+        "data": [
+            fight(3, "Balnazzar", {
+                **chars(
+                    "healers",
+                    ("Shockà", "Paladin", "Holy", 9650.0, 98),
+                    ("Realheal", "Paladin", "Holy", 31.0, 12),
+                ),
+                **chars("dps", ("Dualbuck", "Paladin", "Retribution", 5200.0, 74)),
+            }),
+            fight(4, "Beatrix", chars(
+                "healers", ("Dualbuck", "Paladin", "Holy", 4800.0, 70)
+            )),
+            fight(10000, "Scarlet Enclave", chars(
+                "healers",
+                ("Shockà", "Paladin", "Holy", 8100.0, 96),
+                ("Realheal", "Paladin", "Holy", 24.0, 10),
+            )),
+        ]
+    },
+    ("SHOCK", "hps"): {
+        "data": [
+            fight(3, "Balnazzar", chars(
+                "healers",
+                ("Shockà", "Paladin", "Holy", 203.0, 8),
+                ("Realheal", "Paladin", "Holy", 2314.0, 91),
+            )),
+            fight(4, "Beatrix", chars(
+                "healers", ("Dualbuck", "Paladin", "Holy", 260.0, 9)
+            )),
+        ]
+    },
+}
+
+
+class ShockadinReportCardTests(SimpleTestCase):
+    """SoD Holy paladins are shockadins — damage dealers WCL files as healers."""
+
+    def build_card(self):
+        raids = [se_raid("SHOCK", (2026, 7, 9))]
+
+        def fake_rankings(c, metric="dps", force=False):
+            return SHOCKADIN_RANKINGS[(c, metric)], None
+
+        with mock.patch.object(
+            wcl, "_cached_all_raids", return_value=(raids, None)
+        ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
+            card, _ = wcl.get_report_card("SHOCK")
+        return card
+
+    def test_damage_dealing_paladin_moves_to_dps_as_shockadin(self):
+        card = self.build_card()
+        self.assertIn("Shockà", [p["name"] for p in card["dps"]])
+        self.assertNotIn("Shockà", [p["name"] for p in card["healers"]])
+        row = next(p for p in card["dps"] if p["name"] == "Shockà")
+        self.assertEqual(row["spec"], "Shockadin")
+        # The damage figures travel with them.
+        self.assertEqual(row["cells"]["3"]["dps"], 9650.0)
+
+    def test_genuine_holy_healer_stays_a_healer(self):
+        card = self.build_card()
+        self.assertIn("Realheal", [p["name"] for p in card["healers"]])
+        self.assertNotIn("Realheal", [p["name"] for p in card["dps"]])
+        row = next(p for p in card["healers"] if p["name"] == "Realheal")
+        self.assertEqual(row["spec"], "Holy")
+        self.assertEqual(row["cells"]["3"]["hps"], 2314.0)
+
+    def test_paladin_in_both_buckets_merges_into_one_dps_row(self):
+        card = self.build_card()
+        rows = [p for p in card["dps"] if p["name"] == "Dualbuck"]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("Dualbuck", [p["name"] for p in card["healers"]])
+        # Fight 3 came from the dps bucket, fight 4 from the healers bucket.
+        cells = rows[0]["cells"]
+        self.assertEqual(cells["3"]["dps"], 5200.0)
+        self.assertEqual(cells["4"]["dps"], 4800.0)
+        self.assertEqual(cells["4"]["hps"], 260.0)
+        # Retribution is left alone; only "Holy" is rewritten.
+        self.assertEqual(cells["3"]["spec"], "Retribution")
+        self.assertEqual(cells["4"]["spec"], "Shockadin")
+
+
+class ShockadinLeaderboardTests(SimpleTestCase):
+    def aggregate(self, rankings, raids=None):
+        raids = raids or [se_raid("SHOCK", (2026, 7, 9))]
+
+        def fake_rankings(code, metric="dps", force=False):
+            return rankings[(code, metric)], None
+
+        with mock.patch.object(
+            wcl, "_cached_all_raids", return_value=(raids, None)
+        ), mock.patch.object(
+            wcl, "get_member_map", return_value={}
+        ), mock.patch.object(
+            roster, "characters", return_value=[]
+        ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
+            return wcl._aggregate_leaderboard()
+
+    def test_shockadin_ranks_as_dps_and_healer_stays_healer(self):
+        rows = {r["name"]: r for r in self.aggregate(SHOCKADIN_RANKINGS)["players"]}
+        self.assertEqual(rows["Shockà"]["role"], "DPS")
+        self.assertEqual(rows["Shockà"]["overall"]["spec"], "Shockadin")
+        # Incidental healing is still recorded, it just doesn't set the role.
+        self.assertEqual(rows["Shockà"]["best_hps"]["hps"], 203.0)
+        self.assertEqual(rows["Realheal"]["role"], "Healer")
+        self.assertEqual(rows["Realheal"]["best_hps"]["hps"], 2314.0)
+
+    def test_shockadin_with_no_overall_still_ranks_as_dps(self):
+        # Dovaah's shape from the live standings: absent from the complete-raid
+        # fight, but a strong boss parse. Judged on best boss, not overall.
+        rankings = {
+            ("SHOCK", "dps"): {
+                "data": [
+                    fight(3, "Balnazzar", chars(
+                        "healers", ("Dovaah", "Paladin", "Holy", 5883.0, 73)
+                    )),
+                ]
+            },
+            ("SHOCK", "hps"): {
+                "data": [
+                    fight(3, "Balnazzar", chars(
+                        "healers", ("Dovaah", "Paladin", "Holy", 331.0, 15)
+                    )),
+                ]
+            },
+        }
+        rows = {r["name"]: r for r in self.aggregate(rankings)["players"]}
+        self.assertIsNone(rows["Dovaah"]["overall"])
+        self.assertEqual(rows["Dovaah"]["role"], "DPS")
+        self.assertEqual(rows["Dovaah"]["best_boss"]["spec"], "Shockadin")
+
+
 # TestCase (not SimpleTestCase): the unlocked /softres page reads the
 # recent-audits list from the database.
 class PasswordGateTests(TestCase):
