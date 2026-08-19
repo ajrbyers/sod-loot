@@ -122,6 +122,18 @@ BUFF_AURAS = {
     RANGED: (TRUESHOT, SHOUT),
 }
 
+# What each of those auras is *worth* when ranking seats (default 1). Leader
+# of the Pack outweighs everything else a melee could have combined: melee
+# crit is the buff the top parses convert best, so the best-buffed-seat
+# auction in the fill phase funnels the stars into the feral's group rather
+# than a group that merely collected Sanctity + Horn + Shout. Sanctity is
+# likewise what a shockadin actually scales from (+10% holy damage).
+BUFF_WEIGHTS = {
+    TANK: {LOTP: 5},
+    MELEE: {LOTP: 5},
+    SHOCKADIN: {SANCTITY: 3},
+}
+
 # Where a bucket goes when its own groups are full. Casters and healers are
 # both spellcasters wanting the same auras, so they share before either is sent
 # to the melee, where neither gains anything.
@@ -130,7 +142,7 @@ SPILL_COMPATIBLE = {
     MELEE: (MELEE, RANGED),
     CASTER: (HEALER, CASTER, RANGED),
     HEALER: (CASTER, HEALER, RANGED),
-    SHOCKADIN: (CASTER, HEALER, MELEE),
+    SHOCKADIN: (MELEE, CASTER, HEALER),
     RANGED: (RANGED, MELEE),
 }
 
@@ -400,10 +412,14 @@ def allocate_groups(counts, group_count):
 
 
 def _archetype_plan(players, group_count):
-    """Archetype for each group index, melee first then caster/healer/ranged."""
+    """Archetype for each group index, melee first then caster/healer/ranged.
+
+    Shockadins count toward the melee budget: their home is now the Sanctity
+    group (see the shockadin pass), so that's where their seat has to exist.
+    """
     counts = {
-        MELEE: sum(1 for p in players if p["bucket"] in (TANK, MELEE)),
-        CASTER: sum(1 for p in players if p["bucket"] in (CASTER, SHOCKADIN)),
+        MELEE: sum(1 for p in players if p["bucket"] in (TANK, MELEE, SHOCKADIN)),
+        CASTER: sum(1 for p in players if p["bucket"] == CASTER),
         HEALER: sum(1 for p in players if p["bucket"] == HEALER),
         RANGED: sum(1 for p in players if p["bucket"] == RANGED),
     }
@@ -484,13 +500,15 @@ def _by_standing(players):
 
 def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why="",
             buckets=None):
-    """Seat one aura carrier per group before doubling any of them up.
+    """Seat one aura carrier per group; excess carriers stay in the pool.
 
     This is the whole point of the builder: Sanctity/LotP/Moonkin and friends
     are party-scoped and don't stack, so the second one in a party is wasted.
     `archetypes` is in preference order — a spare boomkin does more good in the
     healer group (spell crit still applies) than as a second one in a caster
-    group, so covering a new group always beats the preferred archetype.
+    group, so covering a new group always beats the preferred archetype. Once
+    every reachable group is covered, the leftover carriers are left for the
+    fill phase to seat by parse alongside everyone else.
 
     `prefer` picks between groups that are otherwise equal (e.g. a feral wants
     the tank's group for the melee crit). It never outranks covering a group
@@ -507,6 +525,15 @@ def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why="
         if aura in p["auras"] and (buckets is None or p["bucket"] in buckets)
     ])
     for player in carriers:
+        # Excess carriers are never doubled up here: once every reachable
+        # group is covered, whoever is left goes through the fill phase with
+        # everyone else, ranked by parse. A spare carrier gets no squatter's
+        # rights on the seats of the best-buffed group.
+        if not any(
+            g.free > 0 and g.archetype in archetypes and not g.has_aura(aura)
+            for g in groups
+        ):
+            break
         # An aura carrier may also hold an Atiesh, and being seated here means
         # they skip the Atiesh pass entirely — so break ties away from a group
         # that already has their version. Half a point: it separates equals
@@ -526,15 +553,7 @@ def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why="
         if placed is not None:
             pool.remove(player)
             if note:
-                carrying = sum(
-                    1 for p in placed.players if aura in (p.get("auras") or [])
-                )
-                if carrying > 1:
-                    reason = (
-                        f"carries {label}, but this group already had one "
-                        f"({carrying} now): every {placed.archetype} group was covered"
-                    )
-                elif prefer and prefer(placed) and prefer_why:
+                if prefer and prefer(placed) and prefer_why:
                     reason = f"carries {label} — {prefer_why}"
                 else:
                     reason = (
@@ -653,9 +672,12 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
     # --- Tanks -------------------------------------------------------------
     # Stacked: every tank into group 1, first come first served. Anyone who
     # doesn't fit falls through to the per-class rules below rather than being
-    # left in the pool for the generic fill to scatter.
+    # left in the pool for the generic fill to scatter. Warlock tanks are
+    # never stacked: they live with the casters whatever the toggle says.
     if stack_tanks and groups:
-        for player in [p for p in pool if p["bucket"] == TANK]:
+        for player in [
+            p for p in pool if p["bucket"] == TANK and p["class"] != "Warlock"
+        ]:
             if groups[0].free <= 0:
                 break
             groups[0].add(player)
@@ -718,36 +740,12 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
     }
 
     # --- Melee groups ------------------------------------------------------
-    # Ret paladins first, and the paladin tank's group gets one before anyone
-    # else does. Then one feral per group (Leader of the Pack), then warriors
-    # spread for the shout.
-    rets = _by_standing([p for p in pool if SANCTITY in p["auras"]])
-    for player in rets:
-        placed = _place(
-            groups,
-            player,
-            lambda g: (
-                None if g.archetype != MELEE
-                else (4 if g.index in pala_tank_groups and not g.has_aura(SANCTITY)
-                      else 2 if not g.has_aura(SANCTITY)
-                      else 0)
-            ),
-        )
-        if placed is not None:
-            pool.remove(player)
-            note(
-                player,
-                placed,
-                SANCTITY,
-                "ret paladin — Sanctity Aura for the paladin tank in this group"
-                if placed.index in pala_tank_groups
-                else "ret paladin — Sanctity Aura, one per melee group",
-            )
-
-    # Ferals go to a tank's group where there's a seat: Leader of the Pack is
-    # melee crit, and the tanks want it. A bear tank already carries LotP
-    # himself, so has_aura keeps ferals out of his group and sends them to the
-    # rogue/warrior/paladin tank who doesn't have it.
+    # Ferals first, so every later melee pass can SEE where Leader of the Pack
+    # is: the carriers are sorted best parse first, and preferring the feral's
+    # group is how the top melee end up in it. They go to a tank's group where
+    # there's a seat — LotP is melee crit and the tanks want it. A bear tank
+    # already carries it himself, so has_aura keeps ferals out of his group
+    # and sends them to the rogue/warrior/paladin tank who doesn't have it.
     _spread(
         groups,
         pool,
@@ -757,22 +755,74 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
         prefer=lambda g: g.has_bucket(TANK),
         prefer_why="Leader of the Pack, in with the tank for the melee crit",
     )
+
+    # Ret paladins next, the paladin tank's group before anyone else's; among
+    # the rest, the best rets take the LotP groups. Then warriors for the
+    # shout, same preference.
+    rets = _by_standing([p for p in pool if SANCTITY in p["auras"]])
+    for player in rets:
+        # Once every melee group has Sanctity, a spare ret goes in with the
+        # paladin tank: +10% holy damage feeds the paladins stacked there,
+        # and does nothing for a warrior group.
+        placed = _place(
+            groups,
+            player,
+            lambda g: (
+                None if g.archetype != MELEE
+                else (4 if g.index in pala_tank_groups and not g.has_aura(SANCTITY)
+                      else 2 + (0.5 if g.has_aura(LOTP) else 0)
+                      if not g.has_aura(SANCTITY)
+                      else 1 if g.index in pala_tank_groups
+                      else 0)
+            ),
+        )
+        if placed is not None:
+            pool.remove(player)
+            doubled = sum(
+                1 for p in placed.players if SANCTITY in (p.get("auras") or [])
+            ) > 1
+            if doubled:
+                reason = (
+                    "spare ret — stacked with the paladin tank, where +10% holy "
+                    "damage feeds the paladins"
+                    if placed.index in pala_tank_groups
+                    else "spare ret — every melee group already has Sanctity"
+                )
+            elif placed.index in pala_tank_groups:
+                reason = "ret paladin — Sanctity Aura for the paladin tank in this group"
+            else:
+                reason = "ret paladin — Sanctity Aura, one per melee group"
+            note(player, placed, SANCTITY, reason)
+
     # Any leftover melee paladin covers a melee group with no Horn of Lordaeron
     # yet — the ret pass usually does it, but a prot paladin counts too.
     # Shockadins and paladin healers are excluded: they carry the Horn, but
     # their own rules decide where they sit.
     _spread(groups, pool, HORN, melee_archetypes, note, buckets=(MELEE, TANK))
 
-    _spread(groups, pool, SHOUT, melee_archetypes, note)
+    # Warriors are sorted best first too, so preferring the feral's group
+    # sends the top-parsing shout there — the raid lead's rule that the stars
+    # sit where Leader of the Pack is.
+    _spread(
+        groups,
+        pool,
+        SHOUT,
+        melee_archetypes,
+        note,
+        prefer=lambda g: g.has_aura(LOTP),
+        prefer_why="in the feral's group, where the top melee are seated",
+    )
 
     # --- Caster / healer groups -------------------------------------------
     # Boomkins seed the caster groups (Moonkin aura), then Atiesh holders are
     # spread by version, then a shadow priest per group for mana sustain.
     _spread(groups, pool, MOONKIN, caster_archetypes, note)
 
-    # Warlock tanks, now that the boomkins and warriors they want to sit with
-    # are actually on the board. Ordering matters: run this before the boomkins
-    # and the rule can never see one.
+    # Warlock tanks, now that the boomkins they want to sit with are actually
+    # on the board. Ordering matters: run this before the boomkins and the
+    # rule can never see one. They belong with the casters — a boomkin's
+    # group first — never parked with the melee; a healer for them is seated
+    # further down, once the shadow priests have landed.
     for player in [
         p for p in pool if p["bucket"] == TANK and p["class"] == "Warlock"
     ]:
@@ -781,8 +831,8 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
             player,
             lambda g: (
                 3 if g.has_aura(MOONKIN)
-                else 2 if g.has_aura(SHOUT)
-                else 1 if g.archetype == CASTER
+                else 2 if g.archetype == CASTER
+                else 1 if g.archetype == HEALER
                 else 0
             ),
         )
@@ -790,8 +840,8 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
             pool.remove(player)
             why = (
                 "with a boomkin for the spell crit" if placed.has_aura(MOONKIN)
-                else "with a warrior for the shout HP" if placed.has_aura(SHOUT)
-                else "no boomkin or warrior free, so any group"
+                else "a caster group" if placed.archetype == CASTER
+                else "no caster seat free"
             )
             note(player, placed, "tank", f"warlock tank — {why}")
 
@@ -824,25 +874,90 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
     _spread(groups, pool, MANASPRING, caster_archetypes, note)
     _spread(groups, pool, TRUESHOT, (RANGED,), note)
 
+    # --- Heal priests ------------------------------------------------------
+    # They drain their mana bar like nobody else, and Vampiric Touch only
+    # feeds the shadow priest's own party — so each heal priest pairs with a
+    # shadow priest, never two heal priests together while another group
+    # could take one. The warlock tank's group counts as a destination too:
+    # it wants a dedicated healer, ideally a priest.
+    def _wl_tank_in(g):
+        return any(
+            p.get("bucket") == TANK and p.get("class") == "Warlock"
+            for p in g.players
+        )
+
+    def _heal_priest_in(g):
+        return any(
+            p.get("bucket") == HEALER and p.get("class") == "Priest"
+            for p in g.players
+        )
+
+    for player in _by_standing([
+        p for p in pool if p["bucket"] == HEALER and p["class"] == "Priest"
+    ]):
+        placed = _place(
+            groups,
+            player,
+            lambda g: (
+                None
+                if _heal_priest_in(g) or not (g.has_aura(SUSTAIN) or _wl_tank_in(g))
+                else (2 if g.has_aura(SUSTAIN) else 0) + (1 if _wl_tank_in(g) else 0)
+            ),
+        )
+        if placed is not None:
+            pool.remove(player)
+            why = (
+                "with a shadow priest, whose Vampiric Touch feeds the mana bar "
+                "heal priests actually drain"
+                if placed.has_aura(SUSTAIN)
+                else "healer for the warlock tank's group"
+            )
+            note(player, placed, "heal-priest", f"heal priest — {why}")
+
+    # No heal priest to spare? The warlock tank's group still gets a healer —
+    # the best resto druid takes the seat.
+    for group in groups:
+        if not _wl_tank_in(group) or group.free <= 0:
+            continue
+        if any(p.get("bucket") == HEALER for p in group.players):
+            continue
+        druids = _by_standing([
+            p for p in pool if p["bucket"] == HEALER and p["class"] == "Druid"
+        ])
+        if druids:
+            player = druids[0]
+            group.add(player)
+            pool.remove(player)
+            note(
+                player,
+                group,
+                "heal-priest",
+                "resto druid — healer for the warlock tank's group, no heal "
+                "priest being free",
+            )
+
     # --- Shockadins --------------------------------------------------------
-    # House rule: group with a boomkin > group with a ret paladin > whatever.
+    # House rule: Sanctity's group first — +10% holy damage, worth more than
+    # the boomkin's crit with the AoE libram swap — then a boomkin's group,
+    # then whatever.
     for player in [p for p in pool if p["bucket"] == SHOCKADIN]:
         placed = _place(
             groups,
             player,
             lambda g: (
-                4 if g.has_aura(MOONKIN)
-                else 3 if g.has_aura(SANCTITY)
+                4 if g.has_aura(SANCTITY)
+                else 3 if g.has_aura(MOONKIN)
                 else 1
             ),
         )
         if placed is not None:
             pool.remove(player)
             why = (
-                "grouped with a boomkin" if placed.has_aura(MOONKIN)
-                else "no boomkin free, so grouped with a ret paladin"
+                "in with Sanctity Aura for the +10% holy damage"
                 if placed.has_aura(SANCTITY)
-                else "no boomkin or ret paladin free, so any seat"
+                else "no Sanctity group free, so grouped with a boomkin"
+                if placed.has_aura(MOONKIN)
+                else "no Sanctity or boomkin free, so any seat"
             )
             note(player, placed, SHOCKADIN, f"shockadin — {why}")
 
@@ -953,7 +1068,12 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
 
 def _buff_score(group, bucket):
     """How much a group's party auras are worth to this kind of player."""
-    score = sum(1 for aura in BUFF_AURAS.get(bucket, ()) if group.has_aura(aura))
+    weights = BUFF_WEIGHTS.get(bucket, {})
+    score = sum(
+        weights.get(aura, 1)
+        for aura in BUFF_AURAS.get(bucket, ())
+        if group.has_aura(aura)
+    )
     if bucket in (CASTER, HEALER, SHOCKADIN):
         score += len(group.atiesh_versions())
     return score
@@ -962,8 +1082,8 @@ def _buff_score(group, bucket):
 def _budget_explain(players, groups):
     """How the group budget was decided, for the debug popup."""
     counts = {
-        MELEE: sum(1 for p in players if p["bucket"] in (TANK, MELEE)),
-        CASTER: sum(1 for p in players if p["bucket"] in (CASTER, SHOCKADIN)),
+        MELEE: sum(1 for p in players if p["bucket"] in (TANK, MELEE, SHOCKADIN)),
+        CASTER: sum(1 for p in players if p["bucket"] == CASTER),
         HEALER: sum(1 for p in players if p["bucket"] == HEALER),
         RANGED: sum(1 for p in players if p["bucket"] == RANGED),
     }
@@ -1179,9 +1299,14 @@ def rules_summary():
                 "Pinned players first — the rules never move them.",
                 "Tanks: one per melee group, or all in group 1 if 'stack tanks' is "
                 "on. A paladin tank gets a ret paladin for the aura. A warlock tank "
-                "prefers a boomkin's group, else a warrior for shout HP.",
+                "lives with the casters — a boomkin's group when there is one — "
+                "and is never stacked with the other tanks.",
+                "The warlock tank's group gets a dedicated healer: a heal priest "
+                "if one is spare, else the best resto druid.",
                 "Melee: one ret paladin per group (the paladin tank's group first), "
-                "then warriors spread for the shout.",
+                "then warriors spread for the shout. Spare rets stack with the "
+                "paladin tank — Sanctity's +10% holy damage feeds the paladins "
+                "and does nothing for a warrior group.",
                 "Every melee group wants a paladin: Horn of Lordaeron is +6 Str "
                 "and Agi to the party, and nothing else supplies it. Every "
                 "paladin has it, whatever they signed as.",
@@ -1196,9 +1321,13 @@ def rules_summary():
                 "Shadow priests: with two or more, one is reserved for the healer "
                 "group before the casters get a second. A lone one stays with the "
                 "casters.",
+                "Heal priests are the mana-hungry ones, so each pairs with a "
+                "shadow priest (Vampiric Touch is party-only) — never two heal "
+                "priests in one group while another shadow priest sits alone.",
                 "Paladin healers sit with the casters — they don't run out of mana, "
                 "so it frees a healer seat for someone who does.",
-                "Shockadins: boomkin's group > ret paladin's group > any free seat.",
+                "Shockadins: Sanctity Aura's group (+10% holy damage, with the "
+                "AoE libram swap) > boomkin's group > any free seat.",
                 "Ranged hunters are the filler pool and take leftover seats.",
                 "Everyone is seated in their OWN archetype first, before anyone "
                 "is allowed to leave it — otherwise an over-subscribed bucket "
@@ -1211,6 +1340,9 @@ def rules_summary():
                 "aura is worth most on whoever converts it. Players with no "
                 "parse on record are seated after those who have one, not below "
                 "them.",
+                "Leader of the Pack outweighs every other melee aura combined "
+                "when ranking seats, so the top parses funnel into the feral's "
+                "group rather than one that merely collected the small buffs.",
                 "Nobody is benched while a seat is open.",
             ],
         },

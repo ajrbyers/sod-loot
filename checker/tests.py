@@ -1606,7 +1606,9 @@ class CompBuildTests(SimpleTestCase):
             self.assertLessEqual(len(rets), 2)
             self.assertGreaterEqual(len(rets), 1)
 
-    def test_a_shockadin_prefers_the_boomkin_group(self):
+    def test_a_shockadin_prefers_the_sanctity_group(self):
+        # Raid-lead rule: +10% holy damage (with the AoE libram swap) beats
+        # the boomkin's crit, so Sanctity's group wins even with a boomkin free.
         players = [
             _player("Boomie", "Balance", "Ranged"),
             _player("Mage", "Fire", "Ranged"),
@@ -1619,13 +1621,13 @@ class CompBuildTests(SimpleTestCase):
             g for g in result["groups"]
             if any(p["name"] == "Shock" for p in g["players"])
         )
-        self.assertTrue(any(p["name"] == "Boomie" for p in shock_group["players"]))
+        self.assertTrue(any(p["name"] == "Ret" for p in shock_group["players"]))
 
-    def test_a_shockadin_falls_back_to_the_ret_paladin_group(self):
+    def test_a_shockadin_falls_back_to_the_boomkin_group(self):
         players = [
             _player("Mage", "Fire", "Ranged"),
-            _player("Lock", "Affliction", "Ranged"),
-            _player("Ret", "Retribution", "Melee"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Rogue", "Combat", "Melee"),
             _player("Warr", "Fury", "Melee"),
             _player("Shock", "Holy1", "Melee"),
         ]
@@ -1634,7 +1636,7 @@ class CompBuildTests(SimpleTestCase):
             g for g in result["groups"]
             if any(p["name"] == "Shock" for p in g["players"])
         )
-        self.assertTrue(any(p["name"] == "Ret" for p in shock_group["players"]))
+        self.assertTrue(any(p["name"] == "Boomie" for p in shock_group["players"]))
 
     def test_a_feral_joins_the_tank_group_for_leader_of_the_pack(self):
         players = [
@@ -1714,7 +1716,9 @@ class CompBuildTests(SimpleTestCase):
         )
         self.assertTrue(any(p["name"] == "Boomie" for p in tank_group["players"]))
 
-    def test_a_warlock_tank_falls_back_to_a_warrior_for_shout(self):
+    def test_a_warlock_tank_falls_back_to_a_caster_group(self):
+        # No boomkin on the roster: the warlock tank still belongs with the
+        # casters, never parked with the melee for a warrior's shout.
         players = [
             _player("Wtank", "Demonology", "Tank"),
             _player("Warr", "Fury", "Melee"),
@@ -1727,7 +1731,113 @@ class CompBuildTests(SimpleTestCase):
             g for g in result["groups"]
             if any(p["name"] == "Wtank" for p in g["players"])
         )
-        self.assertTrue(any(p["name"] == "Warr" for p in tank_group["players"]))
+        self.assertEqual(tank_group["archetype"], comp.CASTER)
+
+    def test_a_warlock_tank_gets_a_heal_priest(self):
+        # Wiella's own layout for raid 1539299438831603815: the warlock tank
+        # sits in a caster group with the boomkin and a heal priest.
+        players = [
+            _player("Wtank", "Demonology", "Tank"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Lock1", "Affliction", "Ranged"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        tank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Wtank" for p in g["players"])
+        )
+        names = {p["name"] for p in tank_group["players"]}
+        self.assertIn("Boomie", names)
+        self.assertIn("Priest", names)
+
+    def test_a_warlock_tank_gets_a_resto_druid_when_no_priest_is_spare(self):
+        players = [
+            _player("Wtank", "Demonology", "Tank"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Lock1", "Affliction", "Ranged"),
+            _player("Resto", "Restoration", "Healer"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        tank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Wtank" for p in g["players"])
+        )
+        self.assertIn("Resto", {p["name"] for p in tank_group["players"]})
+
+    def test_spare_rets_stack_with_the_paladin_tank(self):
+        # Once every melee group has Sanctity, the spare ret joins the prot
+        # paladin — +10% holy damage feeds the paladins, not a warrior group.
+        players = [
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Bear", "Guardian", "Tank"),
+            _player("Ret1", "Retribution", "Melee"),
+            _player("Ret2", "Retribution", "Melee"),
+            _player("Ret3", "Retribution", "Melee"),
+            *[_player(f"Rogue{i}", "Combat", "Melee") for i in range(5)],
+        ]
+        result = comp.build_comp(players, 2)
+        ptank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Ptank" for p in g["players"])
+        )
+        rets = [
+            p for p in ptank_group["players"] if comp.SANCTITY in p["auras"]
+        ]
+        self.assertEqual(len(rets), 2)
+
+    def test_top_parses_funnel_into_the_lotp_group(self):
+        # The raid lead's headline rule: Leader of the Pack outweighs a group
+        # that merely collected Sanctity + Horn + Shout, so the best parses
+        # land with the feral.
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Feral", "Feral", "Melee"),
+            _player("Ace", "Combat", "Melee"),
+            _player("Star", "Assassination", "Melee"),
+            *[_player(f"Filler{i}", "Subtlety", "Melee") for i in range(5)],
+        ]
+        for name, pct in (("Ace", 99.0), ("Star", 97.0)):
+            next(p for p in players if p["name"] == name)["parse"] = pct
+        result = comp.build_comp(players, 2)
+        feral_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Feral" for p in g["players"])
+        )
+        names = {p["name"] for p in feral_group["players"]}
+        self.assertIn("Ace", names)
+        self.assertIn("Star", names)
+
+    def test_heal_priests_split_one_per_shadow_priest(self):
+        # Raid 1539299438831603815: two heal priests were stacked in one group
+        # while the second shadow priest's party had nobody to feed.
+        players = [
+            _player("Sp1", "Shadow", "Ranged"),
+            _player("Sp2", "Shadow", "Ranged"),
+            _player("Hp1", "Holy", "Healer"),
+            _player("Hp2", "Holy", "Healer"),
+            *[_player(f"Mage{i}", "Fire", "Ranged") for i in range(6)],
+        ]
+        result = comp.build_comp(players, 2)
+        for group in result["groups"]:
+            shadows = [
+                p for p in group["players"] if comp.SUSTAIN in p["auras"]
+            ]
+            heal_priests = [
+                p for p in group["players"]
+                if p["bucket"] == comp.HEALER and p["class"] == "Priest"
+            ]
+            self.assertEqual(len(shadows), 1)
+            self.assertEqual(len(heal_priests), 1)
 
     def test_an_aura_carrier_holding_an_atiesh_still_spreads_the_version(self):
         # Boomkins are seated by the Moonkin rule, which means they skip the
@@ -1775,7 +1885,9 @@ class CompBuildTests(SimpleTestCase):
         )
         self.assertEqual(group["archetype"], comp.HEALER)
 
-    def test_stack_tanks_puts_every_tank_in_group_one(self):
+    def test_stack_tanks_puts_every_tank_but_the_warlock_in_group_one(self):
+        # The warlock tank lives with the casters whatever the toggle says —
+        # Wiella's own comps keep her out of the stacked tank group.
         players = [
             _player("Bear", "Guardian", "Tank"),
             _player("Ptank", "Protection1", "Tank"),
@@ -1787,7 +1899,13 @@ class CompBuildTests(SimpleTestCase):
         ]
         result = comp.build_comp(players, 2, stack_tanks=True)
         group_one = {p["name"] for p in result["groups"][0]["players"]}
-        self.assertEqual({"Bear", "Ptank", "Wtank"} - group_one, set())
+        self.assertEqual({"Bear", "Ptank"} - group_one, set())
+        self.assertNotIn("Wtank", group_one)
+        wtank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Wtank" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Boomie" for p in wtank_group["players"]))
 
     def test_tanks_are_spread_when_stacking_is_off(self):
         players = [
@@ -2281,13 +2399,14 @@ class CompExplainTests(SimpleTestCase):
     def test_the_reason_names_the_rule_that_fired(self):
         players = [
             _player("Boomie", "Balance", "Ranged"),
+            _player("Mage", "Fire", "Ranged"),
             _player("Shock", "Holy1", "Melee"),
             _player("Ret", "Retribution", "Melee"),
             _player("Warr", "Fury", "Melee"),
         ]
         result = comp.build_comp(players, 2)
         by_player = {s["player"]: s for s in result["explain"]["steps"]}
-        self.assertIn("boomkin", by_player["Shock"]["reason"])
+        self.assertIn("Sanctity", by_player["Shock"]["reason"])
         self.assertEqual(by_player["Shock"]["stage"], comp.SHOCKADIN)
         self.assertIn("Moonkin", by_player["Boomie"]["reason"])
 
