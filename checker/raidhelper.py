@@ -79,10 +79,19 @@ def get_event(event_id, force=False):
             raise RaidHelperError(
                 f"Couldn't fetch the Raid-Helper event ({exc})."
             ) from exc
-        # A missing id still returns 200 with a plain-text body on some routes.
-        if not isinstance(data, dict) or "signups" not in data:
+        # Raid-Helper answers 200 for an event it can't serve, saying so in the
+        # body instead: {"status": "failed", "reason": "unknown event"}. Past
+        # events get cleaned up, so this is the common failure, not an edge case.
+        if not isinstance(data, dict):
             raise RaidHelperError(
                 f'No Raid-Helper event found for "{event_id}" — check the link.'
+            )
+        if data.get("status") == "failed" or "signups" not in data:
+            reason = (data.get("reason") or "").strip()
+            raise RaidHelperError(
+                f'Raid-Helper couldn\'t serve event "{event_id}"'
+                + (f" ({reason})" if reason else "")
+                + " — check the link, or the event may have been deleted."
             )
         return data
 

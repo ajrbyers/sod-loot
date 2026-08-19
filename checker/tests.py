@@ -1470,6 +1470,33 @@ class RaidHelperHelperTests(SimpleTestCase):
         for text in ("", "   ", "not an event", "https://example.com/event/abc"):
             self.assertIsNone(raidhelper.parse_event_id(text), text)
 
+    def fetch_event(self, body):
+        """get_event with the cache stubbed out to just run the producer."""
+        with mock.patch.object(
+            raidhelper, "_http_json", return_value=body
+        ), mock.patch.object(
+            raidhelper.apicache, "get_or_set", lambda key, produce, **kw: (produce(), {})
+        ):
+            return raidhelper.get_event("123456789012345678")
+
+    def test_a_deleted_event_is_reported_even_though_it_answers_200(self):
+        # Raid-Helper serves {"status": "failed"} with a 200 for events it has
+        # cleaned up, which is what a past raid looks like — the common case,
+        # not an edge case.
+        with self.assertRaises(raidhelper.RaidHelperError) as caught:
+            self.fetch_event({"status": "failed", "reason": "unknown event"})
+        message = str(caught.exception)
+        self.assertIn("unknown event", message)
+        self.assertIn("deleted", message)
+
+    def test_a_non_dict_body_is_rejected(self):
+        with self.assertRaises(raidhelper.RaidHelperError):
+            self.fetch_event("Endpoint not found")
+
+    def test_a_good_event_comes_back_intact(self):
+        event, _meta = self.fetch_event({"title": "SE", "signups": []})
+        self.assertEqual(event["title"], "SE")
+
     def test_candidate_names_unpicks_discord_nicknames(self):
         # Guild tags and parentheticals are noise; the rest are toon names.
         self.assertEqual(
