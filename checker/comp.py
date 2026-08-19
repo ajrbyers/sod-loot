@@ -551,7 +551,19 @@ def _spread_atiesh(groups, pool, archetypes, note=None):
                 )
 
 
-def build_comp(players, group_count, pins=None, stack_tanks=False):
+def layout_positions(groups):
+    """{player name: group index} from a saved comp's groups."""
+    positions = {}
+    for group in groups or []:
+        index = group.get("index")
+        for player in group.get("players") or []:
+            name = (player or {}).get("name")
+            if name and index:
+                positions[name] = index
+    return positions
+
+
+def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
     """Assign `players` to `group_count` parties of five.
 
     Returns {"groups": [...], "bench": [...], "warnings": [...]}. Players the
@@ -560,6 +572,12 @@ def build_comp(players, group_count, pins=None, stack_tanks=False):
     `stack_tanks` puts every tank in group 1 instead of spreading one per melee
     group — the usual arrangement when the tanks want to share a healer or an
     assignment callout rather than anchor a group each.
+
+    `layout` reseats people where a saved comp had them. Signups move after a
+    comp is saved, so it's applied as a starting point rather than a demand:
+    anyone in it keeps their seat, anyone new is placed by the rules around
+    them, and anyone who dropped out simply isn't there. Distinct from `pins`,
+    which are explicit locks the raid lead set and survive a re-arrange.
     """
     pins = pins or {}
     plan = _archetype_plan(players, group_count)
@@ -579,17 +597,21 @@ def build_comp(players, group_count, pins=None, stack_tanks=False):
             }
         )
 
+    layout = layout or {}
     pool = []
     for player in players:
-        target = pins.get(player["name"])
+        pinned = pins.get(player["name"])
+        target = pinned or layout.get(player["name"])
         if target and 1 <= target <= group_count and groups[target - 1].free > 0:
-            player["pinned"] = target
+            player["pinned"] = pinned or None
             groups[target - 1].add(player)
             note(
                 player,
                 groups[target - 1],
-                "pin",
-                "pinned here by the raid lead — the rules left this seat alone",
+                "pin" if pinned else "saved",
+                "pinned here by the raid lead — the rules left this seat alone"
+                if pinned
+                else "where the saved comp had them",
             )
         else:
             player["pinned"] = None

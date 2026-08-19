@@ -498,12 +498,15 @@ def api_softres(request):
 # ---------------------------------------------------------------------------
 @password_protected
 def comp_builder(request):
+    """The comp builder. ?event=<link or id> deep-links straight to a comp."""
     response = render(
         request,
         "checker/comp.html",
         {
             "guild_id": settings.GUILD_ID,
             "recent_comps": RaidComp.objects.all()[:8],
+            # Loaded on open, so a saved comp can just be linked to.
+            "event_ref": raidhelper.parse_event_id(request.GET.get("event", "")) or "",
         },
     )
     response["Cache-Control"] = "no-store, must-revalidate"
@@ -580,8 +583,11 @@ def api_comp(request):
     if stored and stored.groups:
         group_count = max(group_count, len(stored.groups))
     stack_tanks = bool(stored.stack_tanks) if stored else False
+    # A saved comp is restored as arranged. Signups shift after a save, so
+    # anyone new is placed by the rules around the people already seated.
+    layout = comp.layout_positions(stored.groups) if stored else {}
     result = comp.build_comp(
-        players, group_count, pins=pins, stack_tanks=stack_tanks
+        players, group_count, pins=pins, stack_tanks=stack_tanks, layout=layout
     )
 
     return JsonResponse(

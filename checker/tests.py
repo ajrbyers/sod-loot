@@ -1915,6 +1915,70 @@ class CompBuildTests(SimpleTestCase):
         self.assertEqual(comp.default_group_count(60, 40), 8)
 
 
+class CompSavedLayoutTests(SimpleTestCase):
+    def test_layout_positions_reads_a_saved_comp(self):
+        saved = [
+            {"index": 1, "players": [{"name": "A"}, {"name": "B"}]},
+            {"index": 2, "players": [{"name": "C"}]},
+        ]
+        self.assertEqual(
+            comp.layout_positions(saved), {"A": 1, "B": 1, "C": 2}
+        )
+
+    def test_a_saved_layout_is_restored_rather_than_rebuilt(self):
+        # Group 2 is where the rules would never put a lone ret paladin, so
+        # finding them there proves the saved seat won.
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Mage", "Fire", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2, layout={"Ret": 2, "Warr": 2, "Mage": 1})
+        seats = {
+            p["name"]: g["index"]
+            for g in result["groups"] for p in g["players"]
+        }
+        self.assertEqual(seats, {"Ret": 2, "Warr": 2, "Mage": 1})
+
+    def test_someone_who_signed_up_late_is_placed_around_the_saved_comp(self):
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Latecomer", "Balance", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2, layout={"Ret": 1, "Warr": 1})
+        seats = {
+            p["name"]: g["index"]
+            for g in result["groups"] for p in g["players"]
+        }
+        self.assertEqual(seats["Ret"], 1)
+        self.assertIn("Latecomer", seats)
+
+    def test_a_saved_seat_is_not_a_pin(self):
+        # Restored seats must not masquerade as raid-lead locks, or every
+        # player would show as pinned after a reload.
+        players = [_player("Ret", "Retribution", "Melee")]
+        result = comp.build_comp(players, 1, layout={"Ret": 1})
+        seated = result["groups"][0]["players"][0]
+        self.assertIsNone(seated["pinned"])
+        step = next(s for s in result["explain"]["steps"] if s["player"] == "Ret")
+        self.assertEqual(step["stage"], "saved")
+
+    def test_an_explicit_pin_still_beats_the_saved_seat(self):
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+        ]
+        result = comp.build_comp(
+            players, 2, pins={"Ret": 2}, layout={"Ret": 1, "Warr": 1}
+        )
+        seats = {
+            p["name"]: g["index"]
+            for g in result["groups"] for p in g["players"]
+        }
+        self.assertEqual(seats["Ret"], 2)
+
+
 class CompParseRankingTests(SimpleTestCase):
     def test_the_best_parse_gets_the_best_buffed_melee_seat(self):
         # Group with the feral (Leader of the Pack) is the good seat; the top
@@ -2209,6 +2273,42 @@ class CompEndpointTests(TestCase):
         self.assertIn("explain", data)
         self.assertTrue(data["explain"]["steps"])
         self.assertEqual(data["explain"]["group_count"], data["group_count"])
+
+    def test_the_page_deep_links_to_an_event(self):
+        response = self.client.get("/comp", {"event": "1537195082699112490"})
+        self.assertContains(response, "1537195082699112490")
+
+    def test_a_full_url_deep_links_too(self):
+        response = self.client.get(
+            "/comp", {"event": "https://raid-helper.xyz/event/1537195082699112490"}
+        )
+        self.assertContains(response, "1537195082699112490")
+
+    def test_a_junk_deep_link_is_ignored_not_echoed(self):
+        response = self.client.get("/comp", {"event": "<script>x</script>"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "<script>x</script>")
+
+    def test_reopening_a_saved_comp_restores_the_arrangement(self):
+        # Holylujah is a shockadin, so the rules would seat them with a
+        # boomkin; the saved comp put them in group 2 and that must win.
+        RaidComp.objects.create(
+            raid_id="1537195082699112490",
+            groups=[
+                {"index": 1, "archetype": "melee", "players": [{"name": "Healrond"}]},
+                {"index": 2, "archetype": "caster", "players": [
+                    {"name": "Holylujah"}, {"name": "Knackfleisch"},
+                ]},
+            ],
+        )
+        data = self.fetch().json()
+        seats = {
+            p["name"]: g["index"]
+            for g in data["groups"] for p in g["players"]
+        }
+        self.assertEqual(seats["Holylujah"], 2)
+        self.assertEqual(seats["Knackfleisch"], 2)
+        self.assertEqual(seats["Healrond"], 1)
 
     def test_a_bad_event_reference_is_rejected(self):
         response = self.client.get("/api/comp", {"event": "nonsense"})

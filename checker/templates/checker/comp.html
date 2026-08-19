@@ -108,7 +108,8 @@
     <div class="recent">
       <span class="lbl">Recent comps:</span>
       {% for c in recent_comps %}
-      <a href="#" class="pill recent-pill" data-event="{{ c.raid_id }}">{{ c.instance|default:"Untitled" }}</a>
+      <a href="/comp?event={{ c.raid_id }}" class="pill recent-pill"
+         data-event="{{ c.raid_id }}">{{ c.instance|default:"Untitled" }}</a>
       {% endfor %}
     </div>
     {% endif %}
@@ -232,6 +233,7 @@ function render() {
       <button class="ghost" onclick="showRules()">📖 Rules</button>
       <button class="ghost" onclick="showDebug()">🔍 Why this comp?</button>
       <span class="spacer"></span>
+      <button class="ghost" onclick="copyLink()">🔗 Copy link</button>
       <button class="ghost" onclick="showExport()">Copy for Discord</button>
       <button onclick="save()">Save comp</button>
     </div>
@@ -482,6 +484,32 @@ async function save() {
   alert(ok ? "Comp saved." : (d.error || "Save failed."));
 }
 
+function compLink() {
+  return state ? `${location.origin}/comp?event=${encodeURIComponent(state.event.id)}` : "";
+}
+
+async function copyLink() {
+  if (!state) { alert("Build a comp first."); return; }
+  const url = compLink();
+  try {
+    await navigator.clipboard.writeText(url);
+    flash("Link copied — anyone with the password sees this comp.");
+  } catch (e) {
+    // Clipboard needs a secure context; fall back to something selectable.
+    document.getElementById("exportBox").innerHTML =
+      `<textarea class="export" style="min-height:60px" readonly>${escape(url)}</textarea>`;
+    document.querySelector(".export").select();
+  }
+}
+
+function flash(message) {
+  const el = document.getElementById("atiStatus");
+  if (!el) return;
+  const previous = el.textContent;
+  el.textContent = `· ${message}`;
+  setTimeout(() => { el.textContent = previous; }, 4000);
+}
+
 function showExport() {
   const lines = state.groups.map(g =>
     `Group ${g.index} (${g.archetype})\n` + g.players.map(p =>
@@ -562,6 +590,8 @@ async function load(force) {
       excluded: d.excluded, pins: d.pins || {}, overrides: d.overrides || {},
       stack_tanks: !!d.stack_tanks, explain: d.explain,
     };
+    // Put the event in the address bar so the page can just be linked to.
+    history.replaceState(null, "", `/comp?event=${encodeURIComponent(state.event.id)}`);
     render();
     scanAtiesh();
     loadSuggestions();
@@ -576,6 +606,10 @@ function fmtDate(ts) {
   return ts ? new Date(ts * 1000).toLocaleDateString(undefined,
     { weekday: "short", day: "numeric", month: "short" }) : "—";
 }
+
+// Opened with ?event=... (a shared link, or a recent-comp pill): load it.
+const DEEP_LINK = "{{ event_ref|escapejs }}";
+if (DEEP_LINK) { evInput.value = DEEP_LINK; load(false); }
 </script>
 </body>
 </html>

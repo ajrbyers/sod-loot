@@ -194,10 +194,21 @@ no group is ever given two of the same version:
 
 **Editing.** Drag between groups or onto the bench (tap-select then tap-group on
 touch). Dragging pins someone, so **↻ Auto-arrange** keeps your decisions and
-re-places everyone else. 📌 toggles a pin, *Edit selected* overrides role and
-Atiesh, and **Save comp** persists the layout, overrides and pins against the
-event id so re-opening the link resumes where you left off. *Copy for Discord*
-gives a plain-text block.
+re-places everyone else. 📌 toggles a pin, and *Edit selected* overrides role
+and Atiesh. *Copy for Discord* gives a plain-text block.
+
+**Sharing a comp.** `/comp?event=<link or id>` opens straight into that comp —
+**🔗 Copy link** puts the URL on your clipboard, and the address bar updates
+itself as soon as a comp is on screen, so it's always copyable. Recent comps
+under the input are ordinary links too. Anyone with the shared password sees
+the same thing; a junk `?event=` is ignored rather than echoed back.
+
+**Save comp** persists the arrangement, overrides and pins against the event id,
+and re-opening restores it *as arranged* — a link to a comp shows that comp, not
+a fresh build of it. Signups move after a save, so it's a starting point, not a
+demand: people who dropped out are simply absent, and anyone who signed up since
+is placed by the rules around those already seated. A restored seat is not a pin
+— **↻ Auto-arrange** still re-runs the rules over everyone you haven't pinned.
 
 **Warnings** only fire when you could act on them — six ret paladins across four
 melee groups is forced, so it stays quiet, but doubling a boomkin while another
