@@ -8,8 +8,20 @@ Group=www-data
 WorkingDirectory=/opt/sod-loot
 RuntimeDirectory=sod-loot
 # gunicorn binds a unix socket in /run/sod-loot/ (created by RuntimeDirectory).
+#
+# --timeout must stay ABOVE the app's own Warcraft Logs timeouts, not below
+# them: get_report_rankings allows 90s per call plus a retry (wcl.py), and a
+# cold leaderboard or complete-raid sweep chains many of those. At the old 60s
+# the worker was killed mid-sweep and nginx returned an HTML 502, which the
+# frontend surfaced as "JSON.parse: unexpected character". Keep this and
+# nginx's proxy_read_timeout in step.
+#
+# Workers are almost always parked on a blocking WCL/Blizzard call rather than
+# on CPU, and the soft-res audit page alone fans out 4 concurrent requests, so
+# 3 was too few to keep the page responsive during a sweep.
 ExecStart=/opt/sod-loot/.venv/bin/gunicorn sodloot.wsgi:application \
-    --workers 3 --timeout 60 --bind unix:/run/sod-loot/gunicorn.sock
+    --workers 5 --timeout 300 --graceful-timeout 30 \
+    --bind unix:/run/sod-loot/gunicorn.sock
 Restart=on-failure
 RestartSec=3
 
