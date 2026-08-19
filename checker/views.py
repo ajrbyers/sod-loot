@@ -254,7 +254,7 @@ def top_dps(request):
     both raid sizes. The frontend fans a pasted list out as one request per name
     so results stream in and each toon caches independently.
 
-    Expects JSON: {"name": "<toon>", "force": bool}
+    Expects JSON: {"name": "<toon>", "raid": "se"|"naxx", "force": bool}
     """
     try:
         payload = json.loads(request.body or "{}")
@@ -263,15 +263,20 @@ def top_dps(request):
 
     name = (payload.get("name") or "").strip()
     force = bool(payload.get("force"))
+    raid = (payload.get("raid") or "se").strip().lower()
+    zone = settings.DPS_ZONES.get(raid) or settings.DPS_ZONES["se"]
     if not name:
         return JsonResponse({"error": "Provide a character name."}, status=400)
 
     try:
-        result, meta = wcl.get_top_dps(name, force=force)
+        result, meta = wcl.get_top_dps(name, zone_id=zone["id"], force=force)
         # Whole-raid ("complete raid") DPS comes from the guild's own logs and
         # is cached guild-wide, so it's composed here rather than per toon.
         overall, overall_meta = wcl.get_complete_raid_best(
-            result.get("name") or name, force=force
+            result.get("name") or name,
+            zone_id=zone["id"],
+            zone_name=zone["name"],
+            force=force,
         )
     except wcl.WCLError as exc:
         return JsonResponse({"error": str(exc)}, status=502)
@@ -281,7 +286,7 @@ def top_dps(request):
             "query": name,
             **result,
             "overall": overall,
-            "zone": settings.PARSE_ZONE_NAME,
+            "zone": zone["name"],
             "cache": apicache.summarise([meta, overall_meta]),
         }
     )

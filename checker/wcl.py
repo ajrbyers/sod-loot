@@ -570,16 +570,22 @@ _TOP_DPS_NOT_FOUND = {
 }
 
 
-def get_top_dps(name, force=False):
+def get_top_dps(name, zone_id=None, force=False):
     """Cached highest raid-wide DPS across every spec of the character's class,
-    in both 20-man and 40-man. Returns (result, cache_meta)."""
+    in both 20-man and 40-man. Returns (result, cache_meta).
+
+    zone_id defaults to the parse zone (Scarlet Enclave); the key already
+    carries it, so each zone caches independently."""
     # v3: unspaced specName filters + parse-reported spec attribution; version
     # bumps sidestep stale cached entries from earlier shapes.
-    key = f"topdps3:{settings.PARSE_ZONE_ID}:{_norm(name)}"
-    return apicache.get_or_set(key, lambda: _get_top_dps(name), force=force)
+    zone_id = settings.PARSE_ZONE_ID if zone_id is None else zone_id
+    key = f"topdps3:{zone_id}:{_norm(name)}"
+    return apicache.get_or_set(
+        key, lambda: _get_top_dps(name, zone_id), force=force
+    )
 
 
-def _get_top_dps(name):
+def _get_top_dps(name, zone_id=None):
     character = _resolve_character(name)
     if not character:
         return dict(_TOP_DPS_NOT_FOUND)
@@ -599,7 +605,10 @@ def _get_top_dps(name):
 
     data = graphql(
         _build_spec_rankings_query(specs),
-        {"id": character["id"], "zone": settings.PARSE_ZONE_ID},
+        {
+            "id": character["id"],
+            "zone": settings.PARSE_ZONE_ID if zone_id is None else zone_id,
+        },
     )
     ranked = (data.get("characterData") or {}).get("character") or {}
     candidates = _top_dps_candidates(ranked, specs)
@@ -709,18 +718,20 @@ def get_report_rankings(code, metric="dps", force=False):
     return apicache.get_or_set(f"reportrankings:{code}:{metric}", fetch, force=force)
 
 
-def _fetch_complete_raid_map():
-    """name(norm) -> best complete-raid DPS entry across the guild's SE logs.
+def _fetch_complete_raid_map(zone_name=None):
+    """name(norm) -> best complete-raid DPS entry across the guild's logs for
+    one zone (the parse zone by default).
 
     WCL blocks character-side rankings for the complete-raids pseudo-zone
     ("Unsupported zone") and its leaderboard is uncapped-by-name and truncated,
     so this is assembled from the guild's own reports instead: every full-clear
     log ranks each player's whole-raid DPS under fightID 10000.
     """
+    zone_name = settings.PARSE_ZONE_NAME if zone_name is None else zone_name
     raids, _ = _cached_all_raids()
     best = {}
     for raid in raids:
-        if raid.get("zone") != settings.PARSE_ZONE_NAME:
+        if raid.get("zone") != zone_name:
             continue
         try:
             rankings, _ = get_report_rankings(raid["code"])
@@ -733,7 +744,7 @@ def _fetch_complete_raid_map():
                 continue
             # Mixed logs can carry another zone's complete-raid pseudo-fight.
             enc = (fight.get("encounter") or {}).get("name")
-            if enc and enc != settings.PARSE_ZONE_NAME:
+            if enc and enc != zone_name:
                 continue
             raid_size = fight.get("size")
             for role in (fight.get("roles") or {}).values():
@@ -757,15 +768,21 @@ def _fetch_complete_raid_map():
     return best
 
 
-def get_complete_raid_map(force=False):
-    """Cached guild-wide complete-raid bests. Returns (mapping, cache_meta)."""
-    key = f"completeraid:{settings.GUILD_ID}:{settings.PARSE_ZONE_ID}"
-    return apicache.get_or_set(key, _fetch_complete_raid_map, force=force)
+def get_complete_raid_map(zone_id=None, zone_name=None, force=False):
+    """Cached guild-wide complete-raid bests for one zone (parse zone by
+    default). Returns (mapping, cache_meta)."""
+    zone_id = settings.PARSE_ZONE_ID if zone_id is None else zone_id
+    key = f"completeraid:{settings.GUILD_ID}:{zone_id}"
+    return apicache.get_or_set(
+        key, lambda: _fetch_complete_raid_map(zone_name), force=force
+    )
 
 
-def get_complete_raid_best(name, force=False):
+def get_complete_raid_best(name, zone_id=None, zone_name=None, force=False):
     """One toon's best whole-raid DPS from the guild's logs, or None."""
-    mapping, meta = get_complete_raid_map(force=force)
+    mapping, meta = get_complete_raid_map(
+        zone_id=zone_id, zone_name=zone_name, force=force
+    )
     return mapping.get(_norm(name)), meta
 
 

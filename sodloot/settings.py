@@ -111,6 +111,18 @@ GUILD_ID = int(os.environ.get("GUILD_ID", "811296"))
 PARSE_ZONE_ID = int(os.environ.get("PARSE_ZONE_ID", "2018"))
 PARSE_ZONE_NAME = os.environ.get("PARSE_ZONE_NAME", "Scarlet Enclave")
 
+# Naxxramas. WCL lists two zones by that name; 2017 is the SoD one our logs
+# report, 2006 is the older Classic run.
+NAXX_ZONE_ID = int(os.environ.get("NAXX_ZONE_ID", "2017"))
+NAXX_ZONE_NAME = os.environ.get("NAXX_ZONE_NAME", "Naxxramas")
+
+# Zones the "Highest DPS (all specs)" lookup can be pointed at. Keys are what
+# the frontend sends; "se" is the default for anything unrecognised.
+DPS_ZONES = {
+    "se": {"id": PARSE_ZONE_ID, "name": PARSE_ZONE_NAME},
+    "naxx": {"id": NAXX_ZONE_ID, "name": NAXX_ZONE_NAME},
+}
+
 # Shared password for the leaderboard / after-action report pages.
 PAGE_PASSWORD = os.environ.get("PAGE_PASSWORD", "carnage")
 

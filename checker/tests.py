@@ -451,6 +451,88 @@ class CompleteRaidMapTests(SimpleTestCase):
         self.assertEqual(mapping["kradashdin"]["dps"], 9686.0)
 
 
+class TopDpsZoneTests(SimpleTestCase):
+    """The Highest DPS lookup can be pointed at Naxxramas, not just the SE
+    parse zone. Everything defaults to the parse zone when no zone is given."""
+
+    def zone_queried(self, zone_id=None):
+        """Drive _get_top_dps and report the zone its rankings query asked for."""
+        seen = {}
+
+        def fake_graphql(query, variables=None):
+            if query == wcl._CHAR_CLASS_BY_ID_QUERY:
+                return {
+                    "characterData": {
+                        "character": {"id": 7, "name": "Slamster", "classID": 11}
+                    }
+                }
+            if query == wcl._CLASS_SPECS_QUERY:
+                return CLASSES_PAYLOAD
+            seen["zone"] = variables["zone"]
+            return TOP_DPS_RANKINGS_PAYLOAD
+
+        with mock.patch.object(
+            wcl, "get_member_map", return_value={"slamster": {"id": 7, "name": "Slamster"}}
+        ), mock.patch.dict(
+            wcl._class_specs_cache, {"map": None}
+        ), mock.patch.object(wcl, "graphql", side_effect=fake_graphql):
+            wcl._get_top_dps("Slamster", zone_id)
+        return seen["zone"]
+
+    def test_rankings_query_defaults_to_the_parse_zone(self):
+        self.assertEqual(self.zone_queried(), settings.PARSE_ZONE_ID)
+
+    def test_rankings_query_uses_the_requested_zone(self):
+        self.assertEqual(
+            self.zone_queried(settings.NAXX_ZONE_ID), settings.NAXX_ZONE_ID
+        )
+
+    def test_cache_keys_are_zone_scoped(self):
+        keys = []
+
+        def fake_get_or_set(key, fn, force=False):
+            keys.append(key)
+            return {}, None
+
+        with mock.patch.object(
+            wcl.apicache, "get_or_set", side_effect=fake_get_or_set
+        ):
+            wcl.get_top_dps("Slamster")
+            wcl.get_top_dps("Slamster", zone_id=settings.NAXX_ZONE_ID)
+            wcl.get_complete_raid_map()
+            wcl.get_complete_raid_map(zone_id=settings.NAXX_ZONE_ID)
+
+        # Two zones must never share one cached entry for the same toon.
+        self.assertEqual(keys[0], f"topdps3:{settings.PARSE_ZONE_ID}:slamster")
+        self.assertEqual(keys[1], f"topdps3:{settings.NAXX_ZONE_ID}:slamster")
+        self.assertNotEqual(keys[2], keys[3])
+
+    def test_complete_raid_map_sweeps_only_the_requested_zone(self):
+        raids = [
+            {"code": "SE1", "zone": "Scarlet Enclave", "start": 3, "present": set()},
+            {"code": "NX1", "zone": "Naxxramas", "start": 2, "present": set()},
+        ]
+        naxx_report = complete_raid_report(4242.0)
+        # The pseudo-fight is named for its own zone.
+        naxx_report["reportData"]["report"]["rankings"]["data"][1]["encounter"] = {
+            "name": "Naxxramas"
+        }
+        queried = []
+
+        def fake_rankings(code, metric="dps", force=False):
+            queried.append(code)
+            return naxx_report["reportData"]["report"]["rankings"], None
+
+        with mock.patch.object(
+            wcl, "_cached_all_raids", return_value=(raids, None)
+        ), mock.patch.object(wcl, "get_report_rankings", side_effect=fake_rankings):
+            mapping = wcl._fetch_complete_raid_map("Naxxramas")
+
+        # The Scarlet Enclave log is never even fetched.
+        self.assertEqual(queried, ["NX1"])
+        self.assertEqual(mapping["irvh"]["dps"], 4242.0)
+
+
 def se_raid(code, when):
     """A guild SE raid row as _cached_all_raids returns it."""
     import datetime as dt
@@ -995,6 +1077,40 @@ class TopDpsEndpointTests(SimpleTestCase):
             "/api/topdps", json.dumps({"name": "  "}), content_type="application/json"
         )
         self.assertEqual(response.status_code, 400)
+
+    def post_for_raid(self, raid):
+        """POST a lookup for one raid; report the zone the view resolved."""
+        payload = ({"found": True, "name": "Slamster", "best": None, "specs": []}, None)
+        body = {"name": "Slamster"}
+        if raid is not None:
+            body["raid"] = raid
+        with mock.patch.object(
+            wcl, "get_top_dps", return_value=payload
+        ) as top_mock, mock.patch.object(
+            wcl, "get_complete_raid_best", return_value=(None, None)
+        ) as overall_mock:
+            response = self.client.post(
+                "/api/topdps", json.dumps(body), content_type="application/json"
+            )
+        return response, top_mock, overall_mock
+
+    def test_naxx_raid_resolves_the_naxx_zone(self):
+        response, top_mock, overall_mock = self.post_for_raid("naxx")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["zone"], settings.NAXX_ZONE_NAME)
+        self.assertEqual(top_mock.call_args.kwargs["zone_id"], settings.NAXX_ZONE_ID)
+        self.assertEqual(
+            overall_mock.call_args.kwargs["zone_name"], settings.NAXX_ZONE_NAME
+        )
+
+    def test_missing_or_unknown_raid_falls_back_to_scarlet_enclave(self):
+        for raid in (None, "molten-core"):
+            with self.subTest(raid=raid):
+                response, top_mock, _ = self.post_for_raid(raid)
+                self.assertEqual(response.json()["zone"], settings.PARSE_ZONE_NAME)
+                self.assertEqual(
+                    top_mock.call_args.kwargs["zone_id"], settings.PARSE_ZONE_ID
+                )
 
     def test_get_is_rejected(self):
         self.assertEqual(self.client.get("/api/topdps").status_code, 405)

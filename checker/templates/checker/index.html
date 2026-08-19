@@ -86,9 +86,19 @@
   <div class="card">
     <h2>Highest DPS (all specs)</h2>
     <p class="sub">Paste toon names (comma or newline separated). For each, this finds their highest
-       damage in {{ parse_zone_name }} — every spec of their class is checked, in both 20-man and
-       40-man. <b>Overall</b> is their best whole-raid DPS from the guild's complete clears; the
+       damage in the chosen raid — every spec of their class is checked, in both 20-man and
+       40-man. <b>Parse</b> is their Best Performance Average (the figure the loot rules gate on);
+       <b>Overall</b> is their best whole-raid DPS from the guild's complete clears; the
        boss columns show their best single-fight DPS from any log.</p>
+
+    <label>Which raid?</label>
+    <div class="radios" id="dpsRaid">
+      <label class="radio"><input type="radio" name="dpsraid" value="se" checked>
+        <span><b>{{ parse_zone_name }}</b><small>the parse zone</small></span></label>
+      <label class="radio"><input type="radio" name="dpsraid" value="naxx">
+        <span><b>Naxxramas</b><small>first lookup rebuilds the cache</small></span></label>
+    </div>
+
     <label for="dpsNames">Toon names</label>
     <textarea id="dpsNames" placeholder="Aggrodeus, Healrond&#10;Shapíe"></textarea>
     <button id="dpsBtn">Find highest DPS</button>
@@ -468,9 +478,21 @@ dpsBtn.addEventListener("click", () => runTopDps(false));
 
 let dpsRows = [];
 
+function dpsRaid() {
+  return document.querySelector('input[name="dpsraid"]:checked').value;
+}
+
+// Switching zone invalidates whatever is on screen — SE and Naxx rows share no
+// boss columns and must never be mixed into one table.
+document.getElementById("dpsRaid").addEventListener("change", () => {
+  dpsRows = [];
+  dpsOut.innerHTML = "";
+});
+
 async function runTopDps(force) {
   const names = [...new Set(parseToons(document.getElementById("dpsNames").value))];
   if (!names.length) { dpsOut.innerHTML = '<div class="error">Enter at least one toon name.</div>'; return; }
+  const raid = dpsRaid();
 
   dpsBtn.disabled = true;
   dpsRows = [];
@@ -488,7 +510,7 @@ async function runTopDps(force) {
         const res = await fetch("/api/topdps", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
-          body: JSON.stringify({ name, force }),
+          body: JSON.stringify({ name, raid, force }),
         });
         const d = await res.json();
         if (!res.ok) dpsRows.push({ query: name, error: d.error || "Lookup failed." });
@@ -530,19 +552,29 @@ function renderTopDps(total, done, anyCached) {
       for (const b of r.bosses || []) byBoss[b.encounter] = b;
       return { r, byBoss };
     });
+    const zoneName = (ranked.find(r => r.zone) || {}).zone || "";
     html += `<div class="dps-scroll"><table class="dps-table"><thead><tr>
-      <th>Toon</th><th class="r" title="Whole-raid DPS from the guild's complete SE clears">Overall</th>
+      <th>Toon</th>
+      <th class="r" title="Best Performance Average — the figure the loot rules gate on">Parse</th>
+      <th class="r" title="Whole-raid DPS from the guild's complete ${escape(zoneName)} clears">Overall</th>
       ${bosses.map(b => `<th class="r">${escape(b)}</th>`).join("")}</tr></thead><tbody>`;
     for (const { r, byBoss } of rows) {
       const o = r.overall;
       html += `<tr><td><b>${escape(r.name)}</b>${r.class ? ` <span class="cls">${escape(r.class)}</span>` : ""}</td>`;
+      // Best Performance Average, from the bracket that produced it.
+      if (r.best && r.best.best_average != null) {
+        html += `<td class="r"><b style="color:${parseColor(r.best.best_average)}">${fmtPct(r.best.best_average)}</b>
+          <div class="cls">${r.best.size}-man</div></td>`;
+      } else {
+        html += '<td class="r cls" title="No ranked parse in this zone">—</td>';
+      }
       if (o) {
         html += `<td class="r" title="complete raid · ${o.raid_size} players">
           <b>${Math.round(o.dps).toLocaleString()}</b>
           <div class="cls" style="color:${parseColor(o.rank_percent)}">${fmtPct(o.rank_percent)}</div>
           <div class="cls">${escape(o.spec || "")} · ${o.size}</div></td>`;
       } else {
-        html += '<td class="r cls" title="No complete SE clear in the guild\'s logs">—</td>';
+        html += `<td class="r cls" title="No complete ${escape(zoneName)} clear in the guild's logs">—</td>`;
       }
       for (const name of bosses) {
         const cell = byBoss[name];
@@ -557,7 +589,17 @@ function renderTopDps(total, done, anyCached) {
     // Footer: who tops each column. Rows are sorted by overall, so the first
     // with an overall figure tops that column.
     const topOverall = rows.find(({ r }) => r.overall);
+    // Parse is its own ordering — the best DPS is not always the best parse.
+    let topParse = null;
+    for (const { r } of rows) {
+      const pct = r.best && r.best.best_average;
+      if (pct != null && (!topParse || pct > topParse.pct)) topParse = { toon: r.name, pct };
+    }
     html += `</tbody><tfoot><tr><td>Top toon</td>
+      ${topParse
+        ? `<td class="r"><b>${escape(topParse.toon)}</b>
+            <div class="cls">${fmtPct(topParse.pct)}</div></td>`
+        : '<td class="r cls">—</td>'}
       ${topOverall
         ? `<td class="r"><b>${escape(topOverall.r.name)}</b>
             <div class="cls">${Math.round(topOverall.r.overall.dps).toLocaleString()}</div></td>`
