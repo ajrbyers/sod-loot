@@ -1,0 +1,581 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comp Builder · Guild {{ guild_id }}</title>
+{% include "checker/_style.html" %}
+<style>
+  .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 12px; margin-top: 16px; }
+  .grp { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+         padding: 10px; min-height: 150px; }
+  .grp.over { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, var(--panel2)); }
+  .grp .ghead { display: flex; justify-content: space-between; align-items: baseline;
+                gap: 8px; margin-bottom: 8px; }
+  .grp .gname { font-weight: 700; font-size: 14px; }
+  .grp .gmeta { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                letter-spacing: .5px; }
+  .grp .auras { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; min-height: 4px; }
+  .aura { font-size: 10px; padding: 1px 6px; border-radius: 20px; white-space: nowrap;
+          background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue);
+          border: 1px solid color-mix(in srgb, var(--blue) 40%, transparent); }
+  .aura.ati { background: color-mix(in srgb, var(--gold) 20%, transparent); color: var(--gold2);
+              border-color: color-mix(in srgb, var(--gold) 45%, transparent); }
+  .pl { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 7px;
+        background: var(--panel); border: 1px solid var(--border); margin-bottom: 5px;
+        cursor: grab; font-size: 13px; }
+  .pl:active { cursor: grabbing; }
+  .pl.dragging { opacity: .4; }
+  .pl.sel { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+  .pl .pname { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl .pspec { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+  .pl .flag { font-size: 11px; cursor: pointer; }
+  .pl .flag.off { opacity: .25; }
+  .pl.late { border-style: dashed; }
+  .pl.unresolved .pname { font-style: italic; }
+  .bench { min-height: 60px; }
+  .bench .pl { display: inline-flex; margin-right: 5px; }
+  .warnbox { margin-top: 14px; }
+  .warnbox .w { display: flex; gap: 8px; padding: 8px 11px; border-radius: 8px; font-size: 13px;
+                background: color-mix(in srgb, var(--amber) 12%, transparent);
+                border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+                color: var(--amber); margin-bottom: 6px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+  .toolbar button { margin-top: 0; }
+  .toolbar .spacer { flex: 1; }
+  .sugg { font-size: 11px; color: var(--gold2); cursor: pointer; }
+  .cls-Warrior { color: #c69b6d } .cls-Paladin { color: #f48cba } .cls-Hunter { color: #aad372 }
+  .cls-Rogue { color: #fff468 } .cls-Priest { color: #ffffff } .cls-Shaman { color: #0070dd }
+  .cls-Mage { color: #3fc7eb } .cls-Warlock { color: #8788ee } .cls-Druid { color: #ff7c0a }
+  :root[data-theme="light"] .cls-Priest { color: #4a5568 }
+  :root[data-theme="light"] .cls-Rogue { color: #9a8c00 }
+  .editrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .editrow select, .editrow input { width: auto; padding: 6px 9px; font-size: 13px; }
+  .countrow { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
+  .countrow select { width: auto; padding: 5px 9px; font-size: 13px; }
+  .countrow label.inline { display: flex; align-items: center; gap: 5px; margin: 0;
+    cursor: pointer; font-size: 13px; color: var(--text); }
+  .countrow label.inline input { accent-color: var(--gold); cursor: pointer; }
+  textarea.export { min-height: 220px; font-family: ui-monospace, Menlo, Consolas, monospace;
+                    font-size: 12px; margin-top: 10px; }
+  /* Rules / debug modals */
+  .modal-back { position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.55);
+                display: flex; align-items: flex-start; justify-content: center;
+                padding: 40px 16px; overflow-y: auto; }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+           max-width: 780px; width: 100%; box-shadow: 0 20px 60px var(--shadow);
+           padding: 22px 24px 26px; }
+  .modal h2 { margin: 0; font-size: 19px; color: var(--gold); }
+  .modal .mhead { display: flex; justify-content: space-between; align-items: center;
+                  gap: 12px; margin-bottom: 6px; }
+  .modal .mclose { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                   border-radius: 20px; padding: 5px 12px; font-size: 13px; margin: 0; cursor: pointer; }
+  .modal .msub { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .modal h3 { margin: 18px 0 7px; font-size: 14px; color: var(--gold2);
+              text-transform: uppercase; letter-spacing: .5px; }
+  .modal ul { margin: 0; padding-left: 20px; font-size: 13.5px; }
+  .modal li { margin-bottom: 5px; }
+  .dbg-grp { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px;
+             margin-bottom: 9px; background: var(--panel2); }
+  .dbg-grp .dh { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+  .dbg-row { display: grid; grid-template-columns: 130px 1fr; gap: 8px; font-size: 12.5px;
+             padding: 3px 0; border-top: 1px solid var(--border); }
+  .dbg-row:first-of-type { border-top: none; }
+  .dbg-row .who { font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+  .dbg-row .why { color: var(--muted); }
+  .dbg-stage { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 20px;
+               background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue);
+               margin-right: 5px; vertical-align: 1px; }
+</style>
+</head>
+<body>
+{% include "checker/_chrome.html" %}
+<div class="wrap">
+  <header>
+    <h1>🧩 Comp Builder</h1>
+    <p>Paste a Raid-Helper event link. Signups give the role each person picked
+       (Tank / Melee / Ranged / Healer); the event's linked softres sheet turns
+       Discord nicknames into real character names. Groups are then seeded so the
+       party auras that <em>don't stack</em> — Sanctity, Leader of the Pack,
+       Moonkin, Atiesh — land one per group. Drag anyone anywhere to override.</p>
+  </header>
+
+  <div class="card">
+    <label for="evInput">Raid-Helper event link or ID</label>
+    <input type="text" id="evInput" placeholder="https://raid-helper.xyz/event/1537195082699112490" autocomplete="off">
+    {% if recent_comps %}
+    <div class="recent">
+      <span class="lbl">Recent comps:</span>
+      {% for c in recent_comps %}
+      <a href="#" class="pill recent-pill" data-event="{{ c.raid_id }}">{{ c.instance|default:"Untitled" }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <button id="goBtn" onclick="load(false)">Build comp</button>
+    <button class="ghost" onclick="showRules()">📖 Rules</button>
+    <div id="out" class="result"></div>
+  </div>
+  <div id="modalRoot"></div>
+
+  <footer>Signups cached 5 minutes. Atiesh comes from the armory where Blizzard
+    can see the character, and from your manual corrections everywhere else.</footer>
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+const out = document.getElementById("out");
+const evInput = document.getElementById("evInput");
+evInput.addEventListener("keydown", e => { if (e.key === "Enter") load(false); });
+document.querySelectorAll(".recent-pill").forEach(p => p.addEventListener("click", e => {
+  e.preventDefault(); evInput.value = p.dataset.event; load(false);
+}));
+
+const ATIESH = ["Mage", "Druid", "Priest", "Warlock"];
+const BUCKETS = ["tank", "melee", "caster", "healer", "ranged", "shockadin"];
+const AURA_LABEL = {
+  sanctity: "Sanctity", lotp: "LotP", moonkin: "Moonkin", shout: "Shout",
+  trueshot: "Trueshot", sustain: "VT", windfury: "Windfury", manaspring: "Mana Spring",
+};
+
+// The whole page works off this one object; every edit mutates it and re-renders.
+let state = null;
+let selected = null;   // click-to-move fallback for touch devices
+
+function post(url, body) {
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+    body: JSON.stringify(body),
+  }).then(r => r.json().then(d => ({ ok: r.ok, d })));
+}
+
+function allPlayers() {
+  return [...state.groups.flatMap(g => g.players), ...state.bench];
+}
+
+function findPlayer(name) {
+  return allPlayers().find(p => p.name === name);
+}
+
+// --- rendering ---------------------------------------------------------
+function playerHtml(p) {
+  const cls = p.class ? `cls-${p.class}` : "";
+  const pinned = state.pins[p.name] ? "📌" : "📍";
+  const ati = p.atiesh ? `<span class="aura ati" title="${escape(p.atiesh)} Atiesh">A</span>` : "";
+  const sug = p.suggestion
+    ? `<span class="sugg" title="${escape(p.suggestion.reason)}" data-sugg="${escape(p.name)}">⚑</span>`
+    : "";
+  return `<div class="pl ${p.status === 'late' ? 'late' : ''} ${p.name_resolved === false ? 'unresolved' : ''}
+              ${selected === p.name ? 'sel' : ''}"
+              draggable="true" data-name="${escape(p.name)}" title="${escape(p.note || p.signup_name || '')}">
+    <span class="flag ${state.pins[p.name] ? '' : 'off'}" data-pin="${escape(p.name)}" title="pin to this group">${pinned}</span>
+    <span class="pname ${cls}">${escape(p.name)}</span>${ati}${sug}
+    <span class="pspec">${p.parse != null
+      ? `<b style="color:${parseColor(p.parse)}">${p.parse.toFixed(0)}</b> ` : ""}${
+      escape(p.spec || "?")}${p.bucket === "tank" ? " · TANK" : ""}</span>
+  </div>`;
+}
+
+function groupAuras(g) {
+  const seen = new Map();
+  g.players.forEach(p => {
+    (p.auras || []).forEach(a => seen.set(a, (seen.get(a) || 0) + 1));
+    if (p.atiesh) seen.set("atiesh:" + p.atiesh, (seen.get("atiesh:" + p.atiesh) || 0) + 1);
+  });
+  return [...seen.entries()].map(([k, n]) => {
+    const ati = k.startsWith("atiesh:");
+    const label = ati ? k.slice(7) + " Atiesh" : (AURA_LABEL[k] || k);
+    return `<span class="aura ${ati ? "ati" : ""}">${escape(label)}${n > 1 ? ` ×${n}` : ""}</span>`;
+  }).join("");
+}
+
+function render() {
+  const groups = state.groups.map(g => `
+    <div class="grp" data-group="${g.index}">
+      <div class="ghead"><span class="gname">Group ${g.index}</span>
+        <span class="gmeta">${escape(g.archetype)} · ${g.players.length}/5</span></div>
+      <div class="auras">${groupAuras(g)}</div>
+      ${g.players.map(playerHtml).join("")}
+    </div>`).join("");
+
+  const warn = state.warnings.length
+    ? `<div class="warnbox">${state.warnings.map(w => `<div class="w">⚠ ${escape(w)}</div>`).join("")}</div>`
+    : `<div class="warnbox"><div class="check"><div class="body">
+        <b>No aura conflicts.</b><div class="detail">Every non-stacking party buff is spread as far as the roster allows.</div>
+       </div></div></div>`;
+
+  out.innerHTML = `
+    <div class="check"><div class="body">
+      <b>${escape(state.event.title || "Untitled raid")}</b>
+      <div class="detail">${fmtDate(state.event.date)} · led by ${escape(state.event.leader || "?")}
+      · ${allPlayers().length} attending${state.event.softres
+        ? ` · softres <a href="https://softres.it/raid/${escape(state.event.softres)}" target="_blank">${escape(state.event.softres)}</a>` : ""}
+      ${state.excluded.length ? ` · ${state.excluded.length} absent` : ""}</div>
+    </div></div>
+    <div class="countrow">Groups:
+      <select id="gcount">${[...Array(8)].map((_, i) =>
+        `<option value="${i + 1}" ${state.groups.length === i + 1 ? "selected" : ""}>${i + 1}</option>`).join("")}</select>
+      <label class="inline"><input type="checkbox" id="stackTanks"
+        ${state.stack_tanks ? "checked" : ""}> Stack tanks in group 1</label>
+      <span id="atiStatus"></span>
+    </div>
+    <div class="groups">${groups}</div>
+    <div class="card" style="margin-top:14px">
+      <div class="gmeta">Bench — drag anyone here to sit them out</div>
+      <div class="bench grp" data-group="bench">${state.bench.map(playerHtml).join("")}</div>
+    </div>
+    ${warn}
+    <div class="toolbar">
+      <button class="ghost" onclick="rebuild()">↻ Auto-arrange</button>
+      <button class="ghost" onclick="editPlayer()">Edit selected…</button>
+      <button class="ghost" onclick="showRules()">📖 Rules</button>
+      <button class="ghost" onclick="showDebug()">🔍 Why this comp?</button>
+      <span class="spacer"></span>
+      <button class="ghost" onclick="showExport()">Copy for Discord</button>
+      <button onclick="save()">Save comp</button>
+    </div>
+    <div id="exportBox"></div>`;
+
+  wire();
+}
+
+// --- interaction -------------------------------------------------------
+function wire() {
+  document.getElementById("gcount").addEventListener("change", e => {
+    setGroupCount(+e.target.value);
+  });
+
+  document.getElementById("stackTanks").addEventListener("change", e => {
+    state.stack_tanks = e.target.checked;
+    // Tanks are placed first, so honouring the toggle means a fresh arrange.
+    // Pinned players still keep their seat.
+    rebuild();
+  });
+
+  out.querySelectorAll(".pl").forEach(el => {
+    el.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("text/plain", el.dataset.name);
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+    el.addEventListener("click", e => {
+      if (e.target.dataset.pin) { togglePin(e.target.dataset.pin); return; }
+      if (e.target.dataset.sugg) { applySuggestion(e.target.dataset.sugg); return; }
+      selected = selected === el.dataset.name ? null : el.dataset.name;
+      render();
+    });
+  });
+
+  out.querySelectorAll(".grp").forEach(el => {
+    el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("over"); });
+    el.addEventListener("dragleave", () => el.classList.remove("over"));
+    el.addEventListener("drop", e => {
+      e.preventDefault(); el.classList.remove("over");
+      move(e.dataTransfer.getData("text/plain"), el.dataset.group);
+    });
+    // Touch fallback: select a player, then tap the destination group.
+    el.addEventListener("click", e => {
+      if (selected && !e.target.closest(".pl")) { move(selected, el.dataset.group); }
+    });
+  });
+}
+
+function move(name, target) {
+  const player = findPlayer(name);
+  if (!player) return;
+  state.groups.forEach(g => { g.players = g.players.filter(p => p.name !== name); });
+  state.bench = state.bench.filter(p => p.name !== name);
+  if (target === "bench") {
+    state.bench.push(player);
+    delete state.pins[name];
+  } else {
+    const group = state.groups.find(g => String(g.index) === String(target));
+    if (!group) return;
+    group.players.push(player);
+    // A hand-placed player is a decision: pin them so auto-arrange keeps it.
+    state.pins[name] = group.index;
+  }
+  selected = null;
+  refreshWarnings();
+}
+
+function togglePin(name) {
+  if (state.pins[name]) delete state.pins[name];
+  else {
+    const group = state.groups.find(g => g.players.some(p => p.name === name));
+    if (group) state.pins[name] = group.index;
+  }
+  render();
+}
+
+function setGroupCount(n) {
+  const keep = state.groups.slice(0, n);
+  // Shrinking: anyone in a dropped group goes back to the pool, not the void.
+  state.groups.slice(n).forEach(g => g.players.forEach(p => {
+    delete state.pins[p.name];
+    state.bench.push(p);
+  }));
+  while (keep.length < n) keep.push({ index: keep.length + 1, archetype: "melee", players: [] });
+  state.groups = keep;
+  rebuild();
+}
+
+function applySuggestion(name) {
+  const player = findPlayer(name);
+  if (!player || !player.suggestion || !player.suggestion.bucket) return;
+  player.bucket = player.suggestion.bucket;
+  player.suggestion = null;
+  state.overrides[name] = { ...(state.overrides[name] || {}), bucket: player.bucket };
+  rebuild();
+}
+
+function editPlayer() {
+  if (!selected) { alert("Click a player first."); return; }
+  const p = findPlayer(selected);
+  if (!p) return;
+  const bucket = prompt(
+    `${p.name} — role (${BUCKETS.join(" / ")})`, p.bucket);
+  if (bucket && BUCKETS.includes(bucket)) {
+    p.bucket = bucket;
+    state.overrides[p.name] = { ...(state.overrides[p.name] || {}), bucket };
+  }
+  const ati = prompt(
+    `${p.name} — Atiesh (${ATIESH.join(" / ")}, blank for none)`, p.atiesh || "");
+  if (ati !== null) {
+    const version = ATIESH.includes(ati) ? ati : "";
+    p.atiesh = version || null;
+    state.overrides[p.name] = { ...(state.overrides[p.name] || {}), atiesh: version };
+    post("/api/atiesh/set", { name: p.name, version });
+  }
+  rebuild();
+}
+
+// --- modals ------------------------------------------------------------
+const modalRoot = document.getElementById("modalRoot");
+
+function closeModal() { modalRoot.innerHTML = ""; }
+
+function openModal(title, sub, body) {
+  modalRoot.innerHTML = `<div class="modal-back">
+    <div class="modal">
+      <div class="mhead"><h2>${escape(title)}</h2>
+        <button class="mclose" onclick="closeModal()">✕ Close</button></div>
+      <p class="msub">${escape(sub)}</p>
+      ${body}
+    </div></div>`;
+  // Click the backdrop (not the panel) to dismiss.
+  modalRoot.querySelector(".modal-back").addEventListener("click", e => {
+    if (e.target.classList.contains("modal-back")) closeModal();
+  });
+}
+
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+let rulesCache = null;
+async function showRules() {
+  if (!rulesCache) {
+    const r = await fetch("/api/comp/rules");
+    if (!r.ok) { alert("Couldn't load the rules."); return; }
+    rulesCache = (await r.json()).sections;
+  }
+  const body = rulesCache.map(s => `<h3>${escape(s.title)}</h3>
+    <ul>${s.items.map(i => `<li>${escape(i)}</li>`).join("")}</ul>`).join("");
+  openModal("Comp builder rules",
+    "Generated from the tables the placement code actually reads, so this can't drift from what it does.",
+    body);
+}
+
+// Explains the comp in front of you, from the trace the builder recorded while
+// placing people — not a second description of the rules.
+function showDebug() {
+  if (!state) { alert("Build a comp first."); return; }
+  const ex = state.explain;
+  if (!ex) {
+    openModal("Why this comp?", "No trace available.",
+      "<p>Hit <b>↻ Auto-arrange</b> to rebuild — the explanation is recorded while the rules run, so a hand-edited layout has none.</p>");
+    return;
+  }
+
+  const b = ex.budget;
+  const counts = Object.entries(b.counts).filter(([, n]) => n)
+    .map(([k, n]) => `${n} ${k}`).join(", ");
+  const alloc = Object.entries(ex.budget.allocated)
+    .map(([k, n]) => `${n} ${k}`).join(", ");
+
+  let body = `<h3>Group budget</h3><ul>
+    <li>${b.attending} attending → ${ex.group_count} groups of 5.</li>
+    <li>Head-count: ${escape(counts)}.</li>
+    <li>Split into: ${escape(alloc)}.</li>
+    ${ex.stack_tanks ? "<li>Tanks stacked in group 1 (toggle is on).</li>" : ""}
+  </ul><h3>Every placement, in the order it happened</h3>`;
+
+  // Group the trace by party so it reads like the comp on screen.
+  const byGroup = new Map();
+  ex.steps.forEach(s => {
+    const k = s.group == null ? "bench" : s.group;
+    if (!byGroup.has(k)) byGroup.set(k, []);
+    byGroup.get(k).push(s);
+  });
+  state.groups.forEach(g => {
+    const steps = byGroup.get(g.index) || [];
+    body += `<div class="dbg-grp"><div class="dh">Group ${g.index} — ${escape(g.archetype)}</div>
+      ${steps.length ? steps.map(s => `<div class="dbg-row">
+        <span class="who">${escape(s.player)}</span>
+        <span class="why"><span class="dbg-stage">${escape(s.stage)}</span>${escape(s.reason)}</span>
+      </div>`).join("") : '<div class="why">Moved here by hand.</div>'}</div>`;
+  });
+  const benched = byGroup.get("bench") || [];
+  if (benched.length) {
+    body += `<div class="dbg-grp"><div class="dh">Bench</div>
+      ${benched.map(s => `<div class="dbg-row"><span class="who">${escape(s.player)}</span>
+        <span class="why">${escape(s.reason)}</span></div>`).join("")}</div>`;
+  }
+
+  const moved = allPlayers().length - ex.steps.length;
+  openModal("Why this comp?",
+    moved > 0
+      ? `${ex.steps.length} placements recorded. Anyone you've dragged since is not listed.`
+      : `${ex.steps.length} placements, newest build.`,
+    body);
+}
+
+// --- server round-trips ------------------------------------------------
+function payloadPlayers() {
+  return allPlayers().map(p => ({
+    name: p.name, raw_spec: p.raw_spec, role: p.role, bucket: p.bucket,
+    atiesh: p.atiesh, signup_name: p.signup_name, discord_id: p.discord_id,
+    status: p.status, parse: p.parse, dps: p.dps,
+  }));
+}
+
+async function refreshWarnings() {
+  render();
+  const { ok, d } = await post("/api/comp/warnings", {
+    groups: state.groups, bench: state.bench, stack_tanks: state.stack_tanks,
+  });
+  if (ok) { state.warnings = d.warnings; render(); }
+}
+
+async function rebuild() {
+  const suggestions = {};
+  allPlayers().forEach(p => { if (p.suggestion) suggestions[p.name] = p.suggestion; });
+  const { ok, d } = await post("/api/comp/build", {
+    players: payloadPlayers(), group_count: state.groups.length, pins: state.pins,
+    stack_tanks: state.stack_tanks,
+  });
+  if (!ok) { alert(d.error || "Rebuild failed."); return; }
+  state.groups = d.groups; state.bench = d.bench; state.warnings = d.warnings;
+  state.explain = d.explain;
+  // Rebuilt records come fresh from the rules, so re-attach the advisory chips.
+  allPlayers().forEach(p => { if (suggestions[p.name]) p.suggestion = suggestions[p.name]; });
+  render();
+}
+
+async function save() {
+  const { ok, d } = await post("/api/comp/save", {
+    event_id: state.event.id, title: state.event.title,
+    groups: state.groups, bench: state.bench,
+    overrides: state.overrides, pins: state.pins,
+    stack_tanks: state.stack_tanks,
+  });
+  alert(ok ? "Comp saved." : (d.error || "Save failed."));
+}
+
+function showExport() {
+  const lines = state.groups.map(g =>
+    `Group ${g.index} (${g.archetype})\n` + g.players.map(p =>
+      `  ${p.name} (${p.spec || "?"}${p.bucket === "tank" ? ", tank" : ""}` +
+      `${p.atiesh ? ", " + p.atiesh + " Atiesh" : ""})`).join("\n")).join("\n\n");
+  const bench = state.bench.length ? `\n\nBench: ${state.bench.map(p => p.name).join(", ")}` : "";
+  document.getElementById("exportBox").innerHTML =
+    `<textarea class="export" readonly>${escape(lines + bench)}</textarea>`;
+  document.querySelector(".export").select();
+}
+
+// Atiesh is scanned per character off the armory, so fan it out after the page
+// is already usable rather than making the first build wait on 30 lookups.
+async function scanAtiesh() {
+  const names = allPlayers().filter(p => !p.atiesh).map(p => p.name);
+  const status = document.getElementById("atiStatus");
+  let done = 0, found = 0;
+  const queue = [...names];
+  const worker = async () => {
+    while (queue.length) {
+      const name = queue.shift();
+      try {
+        const r = await fetch(`/api/atiesh?name=${encodeURIComponent(name)}`);
+        const d = await r.json();
+        if (d.version) {
+          const p = findPlayer(name);
+          if (p) { p.atiesh = d.version; found++; }
+        }
+      } catch (e) { /* a miss just means no Atiesh data for them */ }
+      done++;
+      if (status) status.textContent = `· Atiesh scan ${done}/${names.length}`;
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  if (status) {
+    status.textContent = found
+      ? `· ${found} Atiesh found — auto-arrange to use them`
+      : "· no Atiesh found on the armory";
+  }
+  if (found) render();
+}
+
+// Warcraft Logs cross-check: advisory only, never applied on its own.
+async function loadSuggestions() {
+  const names = allPlayers().map(p => p.name).join(",");
+  try {
+    const r = await fetch(`/api/comp/suggestions?names=${encodeURIComponent(names)}`);
+    const d = await r.json();
+    let any = false;
+    Object.entries(d.suggestions || {}).forEach(([name, s]) => {
+      const p = findPlayer(name);
+      if (p) { p.suggestion = s; any = true; }
+    });
+    let parsed = 0;
+    Object.entries(d.parses || {}).forEach(([name, standing]) => {
+      const p = findPlayer(name);
+      if (p) { p.parse = standing.parse; p.dps = standing.dps; parsed++; }
+    });
+    if (any || parsed) render();
+    // Parses decide who gets the best-buffed seats, so re-arrange once they
+    // land — but only if the raid lead hasn't started moving people, since
+    // their edits are the whole point of the page.
+    if (parsed && !Object.keys(state.pins).length) rebuild();
+  } catch (e) { /* suggestions are a bonus; the comp stands without them */ }
+}
+
+async function load(force) {
+  const q = evInput.value.trim();
+  if (!q) { out.innerHTML = '<div class="error">Paste a Raid-Helper event link first.</div>'; return; }
+  document.getElementById("goBtn").disabled = true;
+  out.innerHTML = '<div class="spin">Fetching signups from Raid-Helper…</div>';
+  try {
+    const r = await fetch(`/api/comp?event=${encodeURIComponent(q)}${force ? "&force=1" : ""}`);
+    const d = await r.json();
+    if (!r.ok) { out.innerHTML = `<div class="error">${escape(d.error || "Something went wrong.")}</div>`; return; }
+    state = {
+      event: d.event, groups: d.groups, bench: d.bench, warnings: d.warnings,
+      excluded: d.excluded, pins: d.pins || {}, overrides: d.overrides || {},
+      stack_tanks: !!d.stack_tanks, explain: d.explain,
+    };
+    render();
+    scanAtiesh();
+    loadSuggestions();
+  } catch (e) {
+    out.innerHTML = `<div class="error">Network error: ${escape(e.message)}</div>`;
+  } finally {
+    document.getElementById("goBtn").disabled = false;
+  }
+}
+
+function fmtDate(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString(undefined,
+    { weekday: "short", day: "numeric", month: "short" }) : "—";
+}
+</script>
+</body>
+</html>

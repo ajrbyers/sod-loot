@@ -8,8 +8,8 @@ from unittest import mock
 from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from checker import gear, items, roster, softres, views, wcl
-from checker.models import SoftresAudit, ToonLink
+from checker import comp, gear, items, raidhelper, roster, softres, views, wcl
+from checker.models import AtieshHolder, RaidComp, SoftresAudit, ToonLink
 
 CSV_HEADER = (
     "Name;Rank;Level;Class;Race;Sex;Last Online (Days);Main/Alt;Player Alts;"
@@ -1449,3 +1449,858 @@ class KnownAltsTests(TestCase):
     def test_unknown_name_has_no_alts(self):
         self.assertEqual(views.known_alts("Stranger"), [])
         self.assertEqual(views.known_alts(""), [])
+
+
+# ---------------------------------------------------------------------------
+# Comp builder
+# ---------------------------------------------------------------------------
+class RaidHelperHelperTests(SimpleTestCase):
+    def test_parse_event_id_accepts_ids_and_urls(self):
+        for text in (
+            "1537195082699112490",
+            " 1537195082699112490 ",
+            "https://raid-helper.xyz/event/1537195082699112490",
+            "https://raid-helper.dev/event/1537195082699112490?x=1",
+        ):
+            self.assertEqual(
+                raidhelper.parse_event_id(text), "1537195082699112490", text
+            )
+
+    def test_parse_event_id_rejects_garbage(self):
+        for text in ("", "   ", "not an event", "https://example.com/event/abc"):
+            self.assertIsNone(raidhelper.parse_event_id(text), text)
+
+    def test_candidate_names_unpicks_discord_nicknames(self):
+        # Guild tags and parentheticals are noise; the rest are toon names.
+        self.assertEqual(
+            raidhelper.candidate_names("<OC>Kalu|Lipis|Idhunn"),
+            ["Kalu", "Lipis", "Idhunn"],
+        )
+        self.assertEqual(
+            raidhelper.candidate_names("Netti/Prata/Diakrath"),
+            ["Netti", "Prata", "Diakrath"],
+        )
+        self.assertEqual(raidhelper.candidate_names("Zkittlèz"), ["Zkittlèz"])
+
+
+class CompClassifyTests(SimpleTestCase):
+    def test_role_and_spec_together_identify_a_shockadin(self):
+        # The whole reason the builder reads Raid-Helper: softres stores both
+        # of these as spec id 65 and cannot tell them apart.
+        melee = comp.classify("Holy1", "Melee")
+        healer = comp.classify("Holy1", "Healer")
+        self.assertEqual(melee["bucket"], comp.SHOCKADIN)
+        self.assertEqual(healer["bucket"], comp.HEALER)
+        self.assertEqual(melee["class"], "Paladin")
+        self.assertEqual(melee["spec"], "Holy")
+
+    def test_survival_hunters_are_melee_and_the_rest_are_filler(self):
+        self.assertEqual(comp.classify("Survival", "Melee")["bucket"], comp.MELEE)
+        self.assertEqual(comp.classify("Marksmanship", "Ranged")["bucket"], comp.RANGED)
+        self.assertEqual(comp.classify("Beastmastery", "Ranged")["bucket"], comp.RANGED)
+
+    def test_sod_tanks_and_healers_survive_the_mapping(self):
+        for spec, role, klass in (
+            ("Combat", "Tank", "Rogue"),
+            ("Demonology", "Tank", "Warlock"),
+            ("Guardian", "Tank", "Druid"),
+            ("Arcane", "Healer", "Mage"),
+        ):
+            info = comp.classify(spec, role)
+            self.assertEqual(info["class"], klass, spec)
+            self.assertEqual(
+                info["bucket"], comp.TANK if role == "Tank" else comp.HEALER, spec
+            )
+
+    def test_casters_keep_their_party_auras(self):
+        self.assertIn(comp.MOONKIN, comp.classify("Balance", "Ranged")["auras"])
+        self.assertIn(comp.SUSTAIN, comp.classify("Shadow", "Ranged")["auras"])
+        self.assertIn(comp.SANCTITY, comp.classify("Retribution", "Melee")["auras"])
+
+    def test_a_paladin_tank_is_not_running_sanctity(self):
+        self.assertNotIn(comp.SANCTITY, comp.classify("Retribution", "Tank")["auras"])
+
+
+RH_EVENT = {
+    "title": "SE Focus Run",
+    "unixtime": 1787166000,
+    "softres": "QbYnondz",
+    "signups": [
+        {"name": "Rektazz", "userid": "1", "spec": "Holy1", "class": "Melee"},
+        {"name": "Eulen-/Knackfleisch", "userid": "2", "spec": "Holy1", "class": "Healer"},
+        {"name": "Healrond/Irv", "userid": "3", "spec": "Guardian", "class": "Tank"},
+        {"name": "Mousíe", "userid": "4", "spec": "Absence", "class": "Absence"},
+        {"name": "Benched", "userid": "5", "spec": "Bench", "class": "Bench"},
+    ],
+}
+
+RH_RESERVES = [
+    {"name": "Holylujah", "user": {"discord_id": "1"}},
+    {"name": "Knackfleisch", "user": {"discord_id": "2"}},
+]
+
+
+class CompRosterTests(SimpleTestCase):
+    def test_softres_supplies_real_names_via_the_discord_join(self):
+        players, excluded = comp.roster_from_event(RH_EVENT, RH_RESERVES, [])
+        by_name = {p["name"]: p for p in players}
+        self.assertIn("Holylujah", by_name)
+        self.assertEqual(by_name["Holylujah"]["signup_name"], "Rektazz")
+        self.assertTrue(by_name["Holylujah"]["name_resolved"])
+        self.assertEqual(by_name["Holylujah"]["bucket"], comp.SHOCKADIN)
+
+    def test_absences_and_bench_signups_never_take_a_seat(self):
+        players, excluded = comp.roster_from_event(RH_EVENT, RH_RESERVES, [])
+        self.assertEqual(len(players), 3)
+        self.assertEqual({e["status"] for e in excluded}, {"Absence", "Bench"})
+
+    def test_the_roster_picks_the_toon_whose_class_matches_the_signup(self):
+        # "Healrond/Irv" signed Guardian, so the druid is the one they're on.
+        characters = [
+            {"name": "Healrond", "class": "Druid", "alts": []},
+            {"name": "Irv", "class": "Paladin", "alts": []},
+        ]
+        players, _ = comp.roster_from_event(RH_EVENT, [], characters)
+        tank = next(p for p in players if p["bucket"] == comp.TANK)
+        self.assertEqual(tank["name"], "Healrond")
+
+
+def _player(name, spec, role, atiesh=None):
+    return comp.make_player(name, spec=spec, role=role, atiesh=atiesh)
+
+
+class CompBuildTests(SimpleTestCase):
+    def test_non_stacking_auras_are_spread_one_per_group(self):
+        players = [_player(f"Ret{i}", "Retribution", "Melee") for i in range(3)]
+        players += [_player(f"War{i}", "Fury", "Melee") for i in range(7)]
+        result = comp.build_comp(players, 2)
+        for group in result["groups"]:
+            rets = [p for p in group["players"] if comp.SANCTITY in p["auras"]]
+            self.assertLessEqual(len(rets), 2)
+            self.assertGreaterEqual(len(rets), 1)
+
+    def test_a_shockadin_prefers_the_boomkin_group(self):
+        players = [
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage", "Fire", "Ranged"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Shock", "Holy1", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        shock_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Shock" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Boomie" for p in shock_group["players"]))
+
+    def test_a_shockadin_falls_back_to_the_ret_paladin_group(self):
+        players = [
+            _player("Mage", "Fire", "Ranged"),
+            _player("Lock", "Affliction", "Ranged"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Shock", "Holy1", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        shock_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Shock" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Ret" for p in shock_group["players"]))
+
+    def test_a_feral_joins_the_tank_group_for_leader_of_the_pack(self):
+        players = [
+            _player("Rtank", "Combat", "Tank"),
+            _player("Feral", "Feral", "Melee"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr1", "Fury", "Melee"),
+            _player("Warr2", "Fury", "Melee"),
+            _player("Rogue1", "Assassination", "Melee"),
+            _player("Rogue2", "Subtlety", "Melee"),
+            _player("Rogue3", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        feral_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Feral" for p in g["players"])
+        )
+        self.assertTrue(
+            any(p["bucket"] == comp.TANK for p in feral_group["players"])
+        )
+
+    def test_a_feral_skips_the_bear_who_already_has_the_aura(self):
+        # A Guardian druid carries Leader of the Pack himself, so the feral is
+        # worth more in the other tank's group.
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            _player("Rtank", "Combat", "Tank"),
+            _player("Feral", "Feral", "Melee"),
+            _player("Warr1", "Fury", "Melee"),
+            _player("Warr2", "Fury", "Melee"),
+            _player("Rogue1", "Assassination", "Melee"),
+            _player("Rogue2", "Subtlety", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        feral_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Feral" for p in g["players"])
+        )
+        names = {p["name"] for p in feral_group["players"]}
+        self.assertIn("Rtank", names)
+        self.assertNotIn("Bear", names)
+
+    def test_a_paladin_tank_gets_a_ret_paladin_for_the_aura(self):
+        players = [
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr1", "Fury", "Melee"),
+            _player("Warr2", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 1)
+        names = {p["name"] for p in result["groups"][0]["players"]}
+        self.assertIn("Ret", names)
+        self.assertIn("Ptank", names)
+
+    def test_a_warlock_tank_lands_with_a_boomkin(self):
+        # Two caster groups and only one boomkin, so landing in the right one
+        # can't be a coincidence. Warlock tanks are placed after the boomkins
+        # precisely so the rule can see them.
+        players = [
+            _player("Wtank", "Demonology", "Tank"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Lock1", "Affliction", "Ranged"),
+            _player("Lock2", "Destruction", "Ranged"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 3)
+        caster_groups = [g for g in result["groups"] if g["archetype"] == comp.CASTER]
+        self.assertGreaterEqual(len(caster_groups), 2)
+        tank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Wtank" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Boomie" for p in tank_group["players"]))
+
+    def test_a_warlock_tank_falls_back_to_a_warrior_for_shout(self):
+        players = [
+            _player("Wtank", "Demonology", "Tank"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        tank_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Wtank" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Warr" for p in tank_group["players"]))
+
+    def test_an_aura_carrier_holding_an_atiesh_still_spreads_the_version(self):
+        # Boomkins are seated by the Moonkin rule, which means they skip the
+        # Atiesh pass — the version must still break the tie between groups.
+        players = [
+            _player("Boomie1", "Balance", "Ranged", atiesh="Druid"),
+            _player("Boomie2", "Balance", "Ranged", atiesh="Druid"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Lock1", "Affliction", "Ranged"),
+            _player("Lock2", "Destruction", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        for group in result["groups"]:
+            versions = [p["atiesh"] for p in group["players"] if p["atiesh"]]
+            self.assertEqual(len(versions), len(set(versions)))
+
+    def test_atiesh_versions_are_never_doubled_up_in_one_group(self):
+        players = [
+            _player("M1", "Fire", "Ranged", atiesh="Mage"),
+            _player("M2", "Frost", "Ranged", atiesh="Mage"),
+            _player("Boomie1", "Balance", "Ranged"),
+            _player("Boomie2", "Balance", "Ranged"),
+            _player("Lock1", "Affliction", "Ranged"),
+            _player("Lock2", "Destruction", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        for group in result["groups"]:
+            versions = [p["atiesh"] for p in group["players"] if p["atiesh"]]
+            self.assertEqual(len(versions), len(set(versions)))
+
+    def test_the_priest_atiesh_prefers_the_healer_group(self):
+        players = [
+            _player("Priest", "Holy", "Healer", atiesh="Priest"),
+            _player("Druid", "Restoration", "Healer"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Lock", "Affliction", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Priest" for p in g["players"])
+        )
+        self.assertEqual(group["archetype"], comp.HEALER)
+
+    def test_stack_tanks_puts_every_tank_in_group_one(self):
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Wtank", "Demonology", "Tank"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage", "Fire", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2, stack_tanks=True)
+        group_one = {p["name"] for p in result["groups"][0]["players"]}
+        self.assertEqual({"Bear", "Ptank", "Wtank"} - group_one, set())
+
+    def test_tanks_are_spread_when_stacking_is_off(self):
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr1", "Fury", "Melee"),
+            _player("Warr2", "Fury", "Melee"),
+            _player("Warr3", "Fury", "Melee"),
+        ]
+        result = comp.build_comp(players, 2, stack_tanks=False)
+        with_tanks = [
+            g for g in result["groups"]
+            if any(p["bucket"] == comp.TANK for p in g["players"])
+        ]
+        self.assertEqual(len(with_tanks), 2)
+
+    def test_stacking_more_tanks_than_a_group_holds_spills_sanely(self):
+        players = [_player(f"T{i}", "Guardian", "Tank") for i in range(7)]
+        result = comp.build_comp(players, 2, stack_tanks=True)
+        self.assertEqual(len(result["groups"][0]["players"]), 5)
+        self.assertEqual(len(result["bench"]), 0)
+
+    def test_stacking_silences_the_tanks_per_group_warning(self):
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            *[_player(f"W{i}", "Fury", "Melee") for i in range(9)],
+        ]
+        spread = comp.build_comp(list(players), 2, stack_tanks=False)
+        stacked = comp.build_comp(list(players), 2, stack_tanks=True)
+        self.assertTrue(any("tank" in w for w in spread["warnings"]))
+        self.assertEqual([w for w in stacked["warnings"] if "tank" in w], [])
+
+    def test_a_spare_shadow_priest_is_reserved_for_the_healer_group(self):
+        players = [
+            _player("Sp1", "Shadow", "Ranged"),
+            _player("Sp2", "Shadow", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Druid", "Restoration", "Healer"),
+        ]
+        result = comp.build_comp(players, 2)
+        healer_group = next(
+            g for g in result["groups"] if g["archetype"] == comp.HEALER
+        )
+        self.assertTrue(
+            any(comp.SUSTAIN in p["auras"] for p in healer_group["players"])
+        )
+
+    def test_a_lone_shadow_priest_stays_with_the_casters(self):
+        players = [
+            _player("Sp1", "Shadow", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Druid", "Restoration", "Healer"),
+        ]
+        result = comp.build_comp(players, 2)
+        sp_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Sp1" for p in g["players"])
+        )
+        self.assertEqual(sp_group["archetype"], comp.CASTER)
+
+    def test_paladin_healers_sit_with_the_casters(self):
+        # They don't run out of mana, so they free a healer seat for someone
+        # who does.
+        players = [
+            _player("Pally", "Holy1", "Healer"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Druid", "Restoration", "Healer"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+            _player("Boomie", "Balance", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        pally_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Pally" for p in g["players"])
+        )
+        self.assertEqual(pally_group["archetype"], comp.CASTER)
+
+    def test_a_shockadin_is_still_not_treated_as_a_paladin_healer(self):
+        # Holy1 + Melee stays a shockadin and follows the boomkin rule.
+        players = [
+            _player("Shock", "Holy1", "Melee"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage", "Fire", "Ranged"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Druid", "Restoration", "Healer"),
+        ]
+        result = comp.build_comp(players, 2)
+        shock_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Shock" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Boomie" for p in shock_group["players"]))
+
+    def test_pinned_players_keep_their_seat(self):
+        players = [_player(f"Ret{i}", "Retribution", "Melee") for i in range(6)]
+        result = comp.build_comp(players, 2, pins={"Ret5": 1})
+        self.assertIn("Ret5", {p["name"] for p in result["groups"][0]["players"]})
+
+    def test_nobody_is_benched_while_a_seat_is_free(self):
+        players = [_player(f"P{i}", "Fury", "Melee") for i in range(9)]
+        result = comp.build_comp(players, 2)
+        self.assertEqual(len(result["bench"]), 0)
+        self.assertEqual(sum(len(g["players"]) for g in result["groups"]), 9)
+
+    def test_overflow_goes_to_the_bench(self):
+        players = [_player(f"P{i}", "Fury", "Melee") for i in range(7)]
+        result = comp.build_comp(players, 1)
+        self.assertEqual(len(result["bench"]), 2)
+
+    def test_group_budget_adds_up(self):
+        alloc = comp.allocate_groups({"melee": 20, "caster": 11, "healer": 5}, 8)
+        self.assertEqual(sum(alloc.values()), 8)
+        self.assertGreater(alloc["melee"], alloc["caster"])
+
+    def test_default_group_count_packs_a_short_signup(self):
+        self.assertEqual(comp.default_group_count(29, 40), 6)
+        self.assertEqual(comp.default_group_count(40, 40), 8)
+        # Never more groups than the raid has room for.
+        self.assertEqual(comp.default_group_count(60, 40), 8)
+
+
+class CompParseRankingTests(SimpleTestCase):
+    def test_the_best_parse_gets_the_best_buffed_melee_seat(self):
+        # Group with the feral (Leader of the Pack) is the good seat; the top
+        # parse should get it ahead of the others.
+        players = [
+            _player("Feral", "Feral", "Melee"),
+            _player("Tank", "Combat", "Tank"),
+            _player("Ace", "Assassination", "Melee"),
+            _player("Mid", "Subtlety", "Melee"),
+            _player("Low", "Combat", "Melee"),
+            _player("Bench1", "Fury", "Melee"),
+            _player("Bench2", "Fury", "Melee"),
+            _player("Bench3", "Fury", "Melee"),
+        ]
+        for name, pct in (("Ace", 99.0), ("Mid", 60.0), ("Low", 12.0)):
+            next(p for p in players if p["name"] == name)["parse"] = pct
+        result = comp.build_comp(players, 2)
+        feral_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Feral" for p in g["players"])
+        )
+        names = {p["name"] for p in feral_group["players"]}
+        self.assertIn("Ace", names)
+        self.assertNotIn("Low", names)
+
+    def test_players_without_a_parse_are_seated_after_those_with_one(self):
+        players = [
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Known", "Fire", "Ranged"),
+            _player("Unknown", "Frost", "Ranged"),
+            _player("Filler1", "Affliction", "Ranged"),
+            _player("Filler2", "Destruction", "Ranged"),
+            _player("Filler3", "Arcane", "Ranged"),
+        ]
+        next(p for p in players if p["name"] == "Known")["parse"] = 95.0
+        result = comp.build_comp(players, 2)
+        boomie_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Boomie" for p in g["players"])
+        )
+        self.assertIn("Known", {p["name"] for p in boomie_group["players"]})
+
+    def test_parse_never_beats_the_archetype(self):
+        # A top-parsing caster must not be dragged into a melee group just
+        # because it has more auras.
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            _player("Feral", "Feral", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Ace", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+        ]
+        next(p for p in players if p["name"] == "Ace")["parse"] = 99.0
+        result = comp.build_comp(players, 2)
+        ace_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Ace" for p in g["players"])
+        )
+        self.assertEqual(ace_group["archetype"], comp.CASTER)
+
+    def test_parses_are_read_off_the_guild_standings(self):
+        rows = [
+            {"name": "Ace", "overall": {"rank_percent": 98.5, "dps": 12000}},
+            {"name": "Nobody", "best_parse": None},
+        ]
+        parses = comp.parses_from_logs(["Ace", "Nobody", "Missing"], rows)
+        self.assertEqual(parses, {"Ace": {"parse": 98.5, "dps": 12000}})
+
+    def test_the_whole_raid_percentile_wins_over_a_single_boss_spike(self):
+        # best_parse is one lucky boss; the overall figure is the standing.
+        rows = [{"name": "Ace", "best_parse": 99, "overall": {"rank_percent": 72, "dps": 9000}}]
+        self.assertEqual(comp.parses_from_logs(["Ace"], rows)["Ace"]["parse"], 72)
+
+    def test_dps_breaks_ties_between_equal_parses(self):
+        # Percentiles saturate at 99 across a guild's core, so the tie-break is
+        # what actually orders the people it matters for. Assert the ordering
+        # itself: whether that changes anyone's seat depends on how contested
+        # the good seats are, which is a separate question.
+        players = [
+            _player("Big", "Combat", "Melee"),
+            _player("Small", "Assassination", "Melee"),
+            _player("Unranked", "Subtlety", "Melee"),
+        ]
+        for name, dps in (("Small", 9000), ("Big", 13000)):
+            player = next(p for p in players if p["name"] == name)
+            player["parse"], player["dps"] = 99.0, dps
+        result = comp.build_comp(players, 2)
+        order = [
+            s["player"] for s in result["explain"]["steps"] if s["stage"] == "fill"
+        ]
+        self.assertEqual(order, ["Big", "Small", "Unranked"])
+
+    def test_the_best_parse_is_seated_first_even_when_listed_last(self):
+        players = [
+            _player("Low", "Combat", "Melee"),
+            _player("Ace", "Assassination", "Melee"),
+        ]
+        next(p for p in players if p["name"] == "Low")["parse"] = 30.0
+        next(p for p in players if p["name"] == "Ace")["parse"] = 99.0
+        result = comp.build_comp(players, 1)
+        order = [
+            s["player"] for s in result["explain"]["steps"] if s["stage"] == "fill"
+        ]
+        self.assertEqual(order, ["Ace", "Low"])
+
+    def test_the_reason_names_the_parse(self):
+        players = [
+            _player("Feral", "Feral", "Melee"),
+            _player("Ace", "Combat", "Melee"),
+            _player("Other", "Fury", "Melee"),
+        ]
+        next(p for p in players if p["name"] == "Ace")["parse"] = 99.0
+        result = comp.build_comp(players, 1)
+        step = next(s for s in result["explain"]["steps"] if s["player"] == "Ace")
+        self.assertIn("99% parse", step["reason"])
+
+
+class CompExplainTests(SimpleTestCase):
+    def test_every_seated_player_gets_a_reason(self):
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Sp", "Shadow", "Ranged"),
+        ]
+        result = comp.build_comp(players, 2)
+        seated = [p["name"] for g in result["groups"] for p in g["players"]]
+        explained = {s["player"] for s in result["explain"]["steps"]}
+        self.assertEqual(set(seated), explained)
+        self.assertTrue(all(s["reason"] for s in result["explain"]["steps"]))
+
+    def test_the_reason_names_the_rule_that_fired(self):
+        players = [
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Shock", "Holy1", "Melee"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Warr", "Fury", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        by_player = {s["player"]: s for s in result["explain"]["steps"]}
+        self.assertIn("boomkin", by_player["Shock"]["reason"])
+        self.assertEqual(by_player["Shock"]["stage"], comp.SHOCKADIN)
+        self.assertIn("Moonkin", by_player["Boomie"]["reason"])
+
+    def test_the_budget_is_explained(self):
+        players = [_player(f"W{i}", "Fury", "Melee") for i in range(7)]
+        budget = comp.build_comp(players, 2)["explain"]["budget"]
+        self.assertEqual(budget["attending"], 7)
+        self.assertEqual(budget["counts"][comp.MELEE], 7)
+        self.assertEqual(budget["allocated"][comp.MELEE], 2)
+
+    def test_a_pinned_player_is_explained_as_pinned(self):
+        players = [_player(f"W{i}", "Fury", "Melee") for i in range(4)]
+        result = comp.build_comp(players, 2, pins={"W3": 1})
+        step = next(s for s in result["explain"]["steps"] if s["player"] == "W3")
+        self.assertEqual(step["stage"], "pin")
+        self.assertEqual(step["group"], 1)
+
+    def test_benched_players_are_explained_too(self):
+        players = [_player(f"W{i}", "Fury", "Melee") for i in range(7)]
+        result = comp.build_comp(players, 1)
+        benched = [s for s in result["explain"]["steps"] if s["group"] is None]
+        self.assertEqual(len(benched), 2)
+        self.assertEqual(benched[0]["stage"], "bench")
+
+
+class CompRulesTests(SimpleTestCase):
+    def test_the_rules_are_generated_from_the_live_tables(self):
+        sections = comp.rules_summary()
+        self.assertTrue(sections)
+        self.assertTrue(all(s["title"] and s["items"] for s in sections))
+        flat = " ".join(i for s in sections for i in s["items"])
+        # Drawn from AURA_LABELS / ATIESH_AURAS / AMBIGUOUS, not hand-typed.
+        self.assertIn(comp.AURA_LABELS[comp.SUSTAIN], flat)
+        self.assertIn(comp.ATIESH_AURAS["Mage"], flat)
+        self.assertIn(comp.AMBIGUOUS[("Holy1", comp.MELEE)], flat)
+
+    def test_a_new_aura_shows_up_without_touching_the_summary(self):
+        # The guard that keeps the modal honest: the text is derived, so an
+        # aura added to the tables appears on its own.
+        original = dict(comp.AURA_LABELS)
+        comp.AURA_LABELS["testaura"] = "Test Aura"
+        try:
+            flat = " ".join(i for s in comp.rules_summary() for i in s["items"])
+            self.assertIn("Test Aura", flat)
+        finally:
+            comp.AURA_LABELS.clear()
+            comp.AURA_LABELS.update(original)
+
+
+class CompWarningTests(SimpleTestCase):
+    def test_a_wasted_aura_is_flagged_when_another_group_lacks_it(self):
+        players = [
+            _player("Boomie1", "Balance", "Ranged"),
+            _player("Boomie2", "Balance", "Ranged"),
+            _player("Mage1", "Fire", "Ranged"),
+            _player("Mage2", "Frost", "Ranged"),
+        ]
+        layout = [
+            {"index": 1, "archetype": comp.CASTER, "players": players[:2]},
+            {"index": 2, "archetype": comp.CASTER, "players": players[2:]},
+        ]
+        warnings = comp.evaluate_layout(layout, [])
+        self.assertTrue(any("Moonkin" in w for w in warnings))
+
+    def test_forced_stacking_is_not_flagged(self):
+        # Two boomkins and only one caster group: nothing to act on, so saying
+        # anything just trains people to ignore the warnings.
+        players = [
+            _player("Boomie1", "Balance", "Ranged"),
+            _player("Boomie2", "Balance", "Ranged"),
+        ]
+        layout = [{"index": 1, "archetype": comp.CASTER, "players": players}]
+        self.assertEqual(
+            [w for w in comp.evaluate_layout(layout, []) if "Moonkin" in w], []
+        )
+
+    def test_a_layout_posted_with_partial_players_does_not_blow_up(self):
+        # The browser posts back whatever it is holding; a player object
+        # missing "bucket" must not turn a warning refresh into a 500.
+        layout = [{"index": 1, "archetype": comp.MELEE, "players": [{"name": "X"}]}]
+        self.assertIsInstance(comp.evaluate_layout(layout, [{"name": "Y"}]), list)
+
+    def test_duplicate_atiesh_in_one_group_is_always_flagged(self):
+        players = [
+            _player("M1", "Fire", "Ranged", atiesh="Mage"),
+            _player("M2", "Frost", "Ranged", atiesh="Mage"),
+        ]
+        layout = [{"index": 1, "archetype": comp.CASTER, "players": players}]
+        self.assertTrue(
+            any("Atiesh" in w for w in comp.evaluate_layout(layout, []))
+        )
+
+
+class CompSuggestionTests(SimpleTestCase):
+    def test_logs_suggest_but_never_overrule_a_signup(self):
+        players = [_player("Galbapal", "Holy1", "Healer")]
+        board = [{"name": "Galbapal", "overall": {"spec": "Shockadin", "dps": 2000}}]
+        comp.suggestions_from_logs(players, board)
+        # The bucket is untouched — the suggestion is the raid lead's to accept.
+        self.assertEqual(players[0]["bucket"], comp.HEALER)
+        self.assertEqual(players[0]["suggestion"]["bucket"], comp.SHOCKADIN)
+
+    def test_no_suggestion_when_logs_agree(self):
+        players = [_player("Warr", "Fury", "Melee")]
+        board = [{"name": "Warr", "overall": {"spec": "Fury", "dps": 2000}}]
+        comp.suggestions_from_logs(players, board)
+        self.assertIsNone(players[0]["suggestion"])
+
+
+@override_settings(ROSTER_FILE="/nonexistent/grm.csv")
+class CompEndpointTests(TestCase):
+    def setUp(self):
+        self.client.post("/comp", {"password": "carnage"})
+
+    def fetch(self, event="1537195082699112490"):
+        meta = {"cached": False, "age": 0, "ttl": 300}
+        sheet = {
+            "id": "QbYnondz",
+            "instances": [{"slug": "scarletenclavesod", "name": "SE", "slots": 40}],
+            "reserves": RH_RESERVES,
+        }
+        with mock.patch.object(
+            raidhelper, "get_event", return_value=(RH_EVENT, meta)
+        ), mock.patch.object(softres, "get_raid", return_value=(sheet, meta)):
+            return self.client.get("/api/comp", {"event": event})
+
+    def test_the_page_and_api_are_behind_the_password(self):
+        from django.test import Client
+
+        self.assertEqual(Client().get("/api/comp").status_code, 403)
+        self.assertContains(Client().get("/comp"), "Password")
+
+    def test_a_comp_is_built_from_the_event(self):
+        data = self.fetch().json()
+        self.assertEqual(data["event"]["softres"], "QbYnondz")
+        self.assertEqual(data["event"]["raid_slots"], 40)
+        seated = [p["name"] for g in data["groups"] for p in g["players"]]
+        self.assertIn("Holylujah", seated)
+        self.assertEqual(len(data["excluded"]), 2)
+
+    def test_the_rules_endpoint_serves_the_generated_sections(self):
+        data = self.client.get("/api/comp/rules").json()
+        self.assertTrue(data["sections"])
+        from django.test import Client
+
+        self.assertEqual(Client().get("/api/comp/rules").status_code, 403)
+
+    def test_the_build_carries_an_explanation(self):
+        data = self.fetch().json()
+        self.assertIn("explain", data)
+        self.assertTrue(data["explain"]["steps"])
+        self.assertEqual(data["explain"]["group_count"], data["group_count"])
+
+    def test_a_bad_event_reference_is_rejected(self):
+        response = self.client.get("/api/comp", {"event": "nonsense"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_raidhelper_failure_maps_to_502(self):
+        with mock.patch.object(
+            raidhelper, "get_event", side_effect=raidhelper.RaidHelperError("rh down")
+        ):
+            response = self.client.get("/api/comp", {"event": "1537195082699112490"})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("rh down", response.json()["error"])
+
+    def test_a_saved_comp_persists_and_reloads(self):
+        payload = {
+            "event_id": "1537195082699112490",
+            "title": "SE Focus Run",
+            "groups": [{"index": 1, "archetype": "melee", "players": []}],
+            "bench": [],
+            "overrides": {"Holylujah": {"bucket": "shockadin"}},
+            "pins": {"Holylujah": 1},
+        }
+        response = self.client.post(
+            "/api/comp/save", json.dumps(payload), content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = RaidComp.objects.get(raid_id="1537195082699112490")
+        self.assertEqual(saved.pins, {"Holylujah": 1})
+        self.assertTrue(self.fetch().json()["saved"])
+
+    def test_the_stack_tanks_choice_is_saved_and_restored(self):
+        payload = {
+            "event_id": "1537195082699112490",
+            "groups": [], "bench": [], "overrides": {}, "pins": {},
+            "stack_tanks": True,
+        }
+        self.client.post(
+            "/api/comp/save", json.dumps(payload), content_type="application/json"
+        )
+        self.assertTrue(RaidComp.objects.get(raid_id="1537195082699112490").stack_tanks)
+        self.assertTrue(self.fetch().json()["stack_tanks"])
+
+    def test_overrides_survive_a_refetch(self):
+        RaidComp.objects.create(
+            raid_id="1537195082699112490",
+            overrides={"Knackfleisch": {"bucket": "shockadin"}},
+        )
+        data = self.fetch().json()
+        everyone = [p for g in data["groups"] for p in g["players"]] + data["bench"]
+        knack = next(p for p in everyone if p["name"] == "Knackfleisch")
+        self.assertEqual(knack["bucket"], "shockadin")
+
+    def test_rebuild_reapplies_the_rules_to_an_edited_roster(self):
+        payload = {
+            "players": [
+                {"name": "Boomie", "raw_spec": "Balance", "role": "Ranged"},
+                {"name": "Shock", "raw_spec": "Holy1", "role": "Melee"},
+                {"name": "Warr", "raw_spec": "Fury", "role": "Melee"},
+            ],
+            "group_count": 1,
+            "pins": {},
+        }
+        response = self.client.post(
+            "/api/comp/build", json.dumps(payload), content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 200)
+        seated = [p["name"] for g in response.json()["groups"] for p in g["players"]]
+        self.assertEqual(sorted(seated), ["Boomie", "Shock", "Warr"])
+
+    def test_a_manual_atiesh_entry_is_remembered_and_wins(self):
+        response = self.client.post(
+            "/api/atiesh/set",
+            json.dumps({"name": "Aelle", "version": "Mage"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.json()["version"], "Mage")
+        # A manual entry short-circuits the armory scan entirely.
+        with mock.patch.object(gear, "analyse_gear") as scan:
+            data = self.client.get("/api/atiesh", {"name": "Aelle"}).json()
+        scan.assert_not_called()
+        self.assertEqual(data["source"], "manual")
+
+    def test_an_unknown_atiesh_version_is_rejected(self):
+        response = self.client.post(
+            "/api/atiesh/set",
+            json.dumps({"name": "Aelle", "version": "Rogue"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_armory_scan_records_what_it_finds(self):
+        analysis = {"found": True, "items": [{"item_id": 236400, "name": "Atiesh"}]}
+        with mock.patch.object(
+            wcl, "get_guild_server", return_value=("wild-growth", "eu", "Carnage")
+        ), mock.patch.object(gear, "analyse_gear", return_value=(analysis, {})):
+            data = self.client.get("/api/atiesh", {"name": "Msmagei"}).json()
+        self.assertEqual(data["version"], "Mage")
+        self.assertEqual(AtieshHolder.objects.get(key="msmagei").source, "armory")
+
+    def test_a_lowercase_lookup_keeps_blizzards_spelling(self):
+        # Looking someone up by a folded name must not overwrite the stored
+        # display name with that casing.
+        analysis = {
+            "found": True,
+            "name": "Meanrond",
+            "items": [{"item_id": 236399, "name": "Atiesh"}],
+        }
+        with mock.patch.object(
+            wcl, "get_guild_server", return_value=("wild-growth", "eu", "Carnage")
+        ), mock.patch.object(gear, "analyse_gear", return_value=(analysis, {})):
+            data = self.client.get("/api/atiesh", {"name": "meanrond"}).json()
+        self.assertEqual(data["name"], "Meanrond")
+        self.assertEqual(data["version"], "Priest")
+        self.assertEqual(AtieshHolder.objects.get(key="meanrond").name, "Meanrond")
+
+    def test_an_armory_miss_is_not_recorded_as_no_atiesh(self):
+        with mock.patch.object(
+            wcl, "get_guild_server", return_value=("wild-growth", "eu", "Carnage")
+        ), mock.patch.object(gear, "analyse_gear", return_value=({"found": False}, {})):
+            data = self.client.get("/api/atiesh", {"name": "Ghost"}).json()
+        self.assertEqual(data["source"], "unknown")
+        self.assertFalse(AtieshHolder.objects.filter(key="ghost").exists())

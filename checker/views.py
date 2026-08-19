@@ -9,8 +9,8 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from . import apicache, blizzard, gear, items, roster, softres, wcl
-from .models import SoftresAudit, ToonLink
+from . import apicache, blizzard, comp, gear, items, raidhelper, roster, softres, wcl
+from .models import AtieshHolder, RaidComp, SoftresAudit, ToonLink
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +488,347 @@ def api_softres(request):
                 "creator": (raid.get("creator") or {}).get("name"),
             },
             "reserves": reserves,
+            "cache": apicache.summarise([meta]),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Comp builder
+# ---------------------------------------------------------------------------
+@password_protected
+def comp_builder(request):
+    response = render(
+        request,
+        "checker/comp.html",
+        {
+            "guild_id": settings.GUILD_ID,
+            "recent_comps": RaidComp.objects.all()[:8],
+        },
+    )
+    response["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+def _stored_atiesh():
+    """{folded name: version} for everyone we've ever checked or been told."""
+    return {h.key: h.version for h in AtieshHolder.objects.all()}
+
+
+def _apply_overrides(players, overrides):
+    """Re-apply the raid lead's manual bucket/Atiesh decisions after a refetch."""
+    for player in players:
+        override = (overrides or {}).get(player["name"]) or {}
+        if override.get("bucket"):
+            comp.set_bucket(player, override["bucket"])
+        if "atiesh" in override:
+            player["atiesh"] = override["atiesh"] or None
+    return players
+
+
+@require_GET
+@require_page_access
+def api_comp(request):
+    """Build (or restore) a comp for a Raid-Helper event.
+
+    Raid-Helper supplies who's coming and the role they signed as; its linked
+    softres sheet supplies real character names (joined on Discord id) and the
+    raid size. Everything else — Atiesh, Warcraft Logs suggestions — is layered
+    on by the client so this stays a fast single request.
+    """
+    ref = (request.GET.get("event") or "").strip()
+    force = request.GET.get("force") == "1"
+    event_id = raidhelper.parse_event_id(ref)
+    if not event_id:
+        return JsonResponse(
+            {"error": "That doesn't look like a Raid-Helper event link or ID."},
+            status=400,
+        )
+    try:
+        event, meta = raidhelper.get_event(event_id, force=force)
+    except raidhelper.RaidHelperError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+
+    # The event names its softres sheet, so the raid lead only pastes one link.
+    reserves, raid_slots, sr_id = [], 40, (event.get("softres") or "").strip()
+    metas = [meta]
+    if sr_id:
+        try:
+            sheet, sr_meta = softres.get_raid(sr_id, force=force)
+            reserves = sheet.get("reserves") or []
+            instances = sheet.get("instances") or []
+            if instances:
+                raid_slots = instances[0].get("slots") or 40
+            metas.append(sr_meta)
+        except softres.SoftresError:
+            sr_id = ""  # the sheet is optional; names just stay as nicknames
+
+    players, excluded = comp.roster_from_event(event, reserves, roster.characters())
+
+    stored = RaidComp.objects.filter(raid_id=event_id).first()
+    overrides = stored.overrides if stored else {}
+    pins = stored.pins if stored else {}
+    _apply_overrides(players, overrides)
+
+    # Atiesh we already know about (armory scan or a manual correction).
+    known = _stored_atiesh()
+    for player in players:
+        if player["atiesh"] is None:
+            player["atiesh"] = known.get(roster.fold(player["name"])) or None
+
+    group_count = comp.default_group_count(len(players), raid_slots)
+    if stored and stored.groups:
+        group_count = max(group_count, len(stored.groups))
+    stack_tanks = bool(stored.stack_tanks) if stored else False
+    result = comp.build_comp(
+        players, group_count, pins=pins, stack_tanks=stack_tanks
+    )
+
+    return JsonResponse(
+        {
+            "event": {
+                "id": event_id,
+                "title": event.get("title") or event.get("displayTitle"),
+                "date": event.get("unixtime"),
+                "leader": event.get("leadername"),
+                "softres": sr_id or None,
+                "raid_slots": raid_slots,
+            },
+            "group_count": group_count,
+            "groups": result["groups"],
+            "bench": result["bench"],
+            "warnings": result["warnings"],
+            "excluded": excluded,
+            "explain": result.get("explain"),
+            # Handed back so re-opening a saved comp restores the raid lead's
+            # decisions in the UI, not just in this one build.
+            "pins": pins,
+            "overrides": overrides,
+            "stack_tanks": stack_tanks,
+            "saved": bool(stored),
+            "cache": apicache.summarise(metas),
+        }
+    )
+
+
+def _players_from_payload(payload):
+    """Rebuild player records from what the page posts back.
+
+    Everything is re-derived from (spec, role) server-side so the rules live in
+    one place; only the raid lead's explicit decisions are taken on trust.
+    """
+    players = []
+    for raw in payload.get("players") or []:
+        name = (raw.get("name") or "").strip()
+        if not name:
+            continue
+        player = comp.make_player(
+            name,
+            spec=raw.get("raw_spec"),
+            role=raw.get("role"),
+            signup_name=raw.get("signup_name") or name,
+            discord_id=raw.get("discord_id"),
+            status=raw.get("status") or "primary",
+        )
+        if raw.get("bucket"):
+            comp.set_bucket(player, raw["bucket"])
+        player["atiesh"] = raw.get("atiesh") or None
+        parse = raw.get("parse")
+        player["parse"] = float(parse) if isinstance(parse, (int, float)) else None
+        dps = raw.get("dps")
+        player["dps"] = float(dps) if isinstance(dps, (int, float)) else None
+        players.append(player)
+    return players
+
+
+@require_POST
+@require_page_access
+def api_comp_build(request):
+    """Re-run the placement rules over an edited roster."""
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    players = _players_from_payload(payload)
+    if not players:
+        return JsonResponse({"error": "No players to place."}, status=400)
+
+    try:
+        group_count = int(payload.get("group_count") or 0)
+    except (TypeError, ValueError):
+        group_count = 0
+    if not 1 <= group_count <= 8:
+        group_count = comp.default_group_count(len(players))
+
+    pins = {
+        str(k): int(v)
+        for k, v in (payload.get("pins") or {}).items()
+        if str(v).lstrip("-").isdigit()
+    }
+    stack_tanks = bool(payload.get("stack_tanks"))
+    result = comp.build_comp(
+        players, group_count, pins=pins, stack_tanks=stack_tanks
+    )
+    return JsonResponse(
+        {
+            "group_count": group_count,
+            "stack_tanks": stack_tanks,
+            "groups": result["groups"],
+            "bench": result["bench"],
+            "warnings": result["warnings"],
+            "explain": result.get("explain"),
+        }
+    )
+
+
+@require_POST
+@require_page_access
+def api_comp_warnings(request):
+    """Re-check a hand-arranged layout against the same rules an auto-build uses."""
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+    return JsonResponse(
+        {
+            "warnings": comp.evaluate_layout(
+                payload.get("groups") or [],
+                payload.get("bench") or [],
+                stack_tanks=bool(payload.get("stack_tanks")),
+            )
+        }
+    )
+
+
+@require_POST
+@require_page_access
+def api_comp_save(request):
+    """Persist the comp as the raid lead arranged it."""
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    event_id = raidhelper.parse_event_id(payload.get("event_id") or "")
+    if not event_id:
+        return JsonResponse({"error": "Unknown event."}, status=400)
+
+    RaidComp.objects.update_or_create(
+        raid_id=event_id,
+        defaults={
+            "instance": (payload.get("title") or "")[:64],
+            "groups": payload.get("groups") or [],
+            "bench": payload.get("bench") or [],
+            "overrides": payload.get("overrides") or {},
+            "pins": payload.get("pins") or {},
+            "stack_tanks": bool(payload.get("stack_tanks")),
+        },
+    )
+    return JsonResponse({"saved": True})
+
+
+@require_GET
+@require_page_access
+def api_atiesh(request):
+    """Does this character have an Atiesh? Armory scan, cached and remembered.
+
+    A manual entry always wins: the raid lead sets those precisely because the
+    armory couldn't see the character.
+    """
+    name = (request.GET.get("name") or "").strip()
+    if not name:
+        return JsonResponse({"error": "Provide a character name."}, status=400)
+
+    key = roster.fold(name)
+    existing = AtieshHolder.objects.filter(key=key).first()
+    if existing and existing.source == AtieshHolder.MANUAL:
+        return JsonResponse(
+            {"name": name, "version": existing.version or None, "source": "manual"}
+        )
+
+    try:
+        realm, _region, _guild = wcl.get_guild_server()
+    except wcl.WCLError:
+        realm = None
+    try:
+        analysis, _meta = gear.analyse_gear(name, realm)
+    except blizzard.BlizzardError as exc:
+        return JsonResponse({"name": name, "version": None, "error": str(exc)})
+
+    version = comp.atiesh_from_gear(analysis)
+    if version is None:
+        # Armory couldn't see them; don't record a miss we aren't sure of.
+        return JsonResponse({"name": name, "version": None, "source": "unknown"})
+
+    # Store Blizzard's spelling, not whatever casing the lookup happened to use.
+    canonical = analysis.get("name") or name
+    AtieshHolder.objects.update_or_create(
+        key=key,
+        defaults={"name": canonical, "version": version, "source": AtieshHolder.ARMORY},
+    )
+    return JsonResponse(
+        {"name": canonical, "version": version or None, "source": "armory"}
+    )
+
+
+@require_POST
+@require_page_access
+def api_atiesh_set(request):
+    """Raid lead correcting the Atiesh scan by hand."""
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    name = (payload.get("name") or "").strip()
+    version = (payload.get("version") or "").strip()
+    if not name:
+        return JsonResponse({"error": "Provide a character name."}, status=400)
+    if version and version not in comp.ATIESH_ITEMS.values():
+        return JsonResponse({"error": "Unknown Atiesh version."}, status=400)
+
+    AtieshHolder.objects.update_or_create(
+        key=roster.fold(name),
+        defaults={"name": name, "version": version, "source": AtieshHolder.MANUAL},
+    )
+    return JsonResponse({"name": name, "version": version or None, "source": "manual"})
+
+
+@require_GET
+@require_page_access
+def api_comp_rules(request):
+    """The rules the builder applies, generated from the tables it reads."""
+    return JsonResponse({"sections": comp.rules_summary()})
+
+
+@require_GET
+@require_page_access
+def api_comp_suggestions(request):
+    """What Warcraft Logs thinks people actually play, as advisory chips.
+
+    Kept off the main build request because the first call sweeps every guild
+    report; the page renders without it and fills the chips in when it lands.
+    """
+    names = [n.strip() for n in (request.GET.get("names") or "").split(",") if n.strip()]
+    if not names:
+        return JsonResponse({"suggestions": {}})
+    try:
+        board, meta = wcl.get_leaderboard()
+    except wcl.WCLError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+
+    rows = board.get("players") or []
+    players = [comp.make_player(n) for n in names]
+    comp.suggestions_from_logs(players, rows)
+    return JsonResponse(
+        {
+            "suggestions": {
+                p["name"]: p["suggestion"] for p in players if p["suggestion"]
+            },
+            # Parses ride along on the same cached sweep: they decide who gets
+            # the best-buffed seats when the page rebuilds.
+            "parses": comp.parses_from_logs(names, rows),
             "cache": apicache.summarise([meta]),
         }
     )
