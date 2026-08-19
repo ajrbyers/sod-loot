@@ -1811,6 +1811,55 @@ class CompBuildTests(SimpleTestCase):
         self.assertEqual(len(result["groups"][0]["players"]), 5)
         self.assertEqual(len(result["bench"]), 0)
 
+    def test_a_stacked_tank_group_with_a_paladin_gets_the_shout(self):
+        # The paladin covers Horn and the aura, so the spare seat is worth more
+        # to a warrior than to a second paladin — and the ret pass must not
+        # take it first.
+        players = [
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Bear", "Guardian", "Tank"),
+            _player("Rtank", "Combat", "Tank"),
+            _player("Warr", "Fury", "Melee"),
+            *[_player(f"Ret{i}", "Retribution", "Melee") for i in range(4)],
+            _player("Rogue", "Subtlety", "Melee"),
+        ]
+        result = comp.build_comp(players, 2, stack_tanks=True)
+        group_one = result["groups"][0]
+        names = {p["name"] for p in group_one["players"]}
+        self.assertIn("Warr", names)
+        self.assertTrue(any(comp.SHOUT in p["auras"] for p in group_one["players"]))
+
+    def test_a_stacked_group_without_a_paladin_does_not_claim_a_warrior(self):
+        players = [
+            _player("Bear", "Guardian", "Tank"),
+            _player("Rtank", "Combat", "Tank"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Ret", "Retribution", "Melee"),
+            _player("Rogue", "Subtlety", "Melee"),
+            _player("Rogue2", "Assassination", "Melee"),
+        ]
+        result = comp.build_comp(players, 2, stack_tanks=True)
+        # No paladin among the tanks, so the normal spread decides; the rule
+        # must not fire and force a warrior in regardless.
+        step = next(
+            s for s in result["explain"]["steps"] if s["player"] == "Warr"
+        )
+        self.assertNotIn("stacked tanks", step["reason"])
+
+    def test_the_stacked_group_is_not_treated_as_missing_an_aura(self):
+        # It has a warrior instead of a ret by design, so other groups doubling
+        # up on Sanctity is forced, not a fixable mistake.
+        players = [
+            _player("Ptank", "Protection1", "Tank"),
+            _player("Warr", "Fury", "Melee"),
+            *[_player(f"Ret{i}", "Retribution", "Melee") for i in range(4)],
+            *[_player(f"R{i}", "Combat", "Melee") for i in range(4)],
+        ]
+        result = comp.build_comp(players, 2, stack_tanks=True)
+        self.assertEqual(
+            [w for w in result["warnings"] if "Sanctity" in w], []
+        )
+
     def test_stacking_silences_the_tanks_per_group_warning(self):
         players = [
             _player("Bear", "Guardian", "Tank"),
@@ -1913,6 +1962,124 @@ class CompBuildTests(SimpleTestCase):
         self.assertEqual(comp.default_group_count(40, 40), 8)
         # Never more groups than the raid has room for.
         self.assertEqual(comp.default_group_count(60, 40), 8)
+
+
+class CompHornTests(SimpleTestCase):
+    def test_every_paladin_carries_the_horn_whatever_they_signed_as(self):
+        for spec in ("Retribution", "Holy1", "Protection1"):
+            for role in ("Melee", "Healer", "Tank"):
+                info = comp.classify(spec, role)
+                self.assertIn(comp.HORN, info["auras"], f"{spec}/{role}")
+
+    def test_only_retribution_brings_sanctity(self):
+        self.assertIn(comp.SANCTITY, comp.classify("Retribution", "Melee")["auras"])
+        self.assertNotIn(comp.SANCTITY, comp.classify("Holy1", "Healer")["auras"])
+        self.assertNotIn(comp.SANCTITY, comp.classify("Protection1", "Tank")["auras"])
+
+    def test_a_melee_group_without_a_paladin_is_flagged(self):
+        players = [_player(f"W{i}", "Fury", "Melee") for i in range(4)]
+        result = comp.build_comp(players, 1)
+        self.assertTrue(
+            any("Horn of Lordaeron" in w for w in result["warnings"])
+        )
+
+    def test_a_melee_group_with_a_paladin_is_not_flagged(self):
+        players = [
+            _player("Ret", "Retribution", "Melee"),
+            *[_player(f"W{i}", "Fury", "Melee") for i in range(3)],
+        ]
+        result = comp.build_comp(players, 1)
+        self.assertEqual(
+            [w for w in result["warnings"] if "Horn" in w], []
+        )
+
+    def test_the_horn_pass_never_hijacks_a_shockadin(self):
+        # Shockadins carry the Horn but their own rule (with a boomkin) wins.
+        players = [
+            _player("Shock", "Holy1", "Melee"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Mage", "Fire", "Ranged"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        shock_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Shock" for p in g["players"])
+        )
+        self.assertTrue(any(p["name"] == "Boomie" for p in shock_group["players"]))
+
+    def test_the_horn_pass_never_hijacks_a_paladin_healer(self):
+        players = [
+            _player("Pally", "Holy1", "Healer"),
+            _player("Priest", "Holy", "Healer"),
+            _player("Mage", "Fire", "Ranged"),
+            _player("Boomie", "Balance", "Ranged"),
+            _player("Warr", "Fury", "Melee"),
+            _player("Rogue", "Combat", "Melee"),
+        ]
+        result = comp.build_comp(players, 2)
+        pally_group = next(
+            g for g in result["groups"]
+            if any(p["name"] == "Pally" for p in g["players"])
+        )
+        self.assertNotEqual(pally_group["archetype"], comp.MELEE)
+
+
+class CompFillPhaseTests(SimpleTestCase):
+    def test_an_oversubscribed_bucket_does_not_eat_another_groups_seats(self):
+        # The bug from a real comp: twelve casters took every seat in the
+        # healer group, exiling healers into melee.
+        players = [
+            *[_player(f"Mage{i}", "Fire", "Ranged") for i in range(8)],
+            *[_player(f"Heal{i}", "Holy", "Healer") for i in range(4)],
+            *[_player(f"War{i}", "Fury", "Melee") for i in range(3)],
+        ]
+        result = comp.build_comp(players, 3)
+        healer_group = next(
+            g for g in result["groups"] if g["archetype"] == comp.HEALER
+        )
+        seated_healers = [
+            p for p in healer_group["players"] if p["bucket"] == comp.HEALER
+        ]
+        self.assertEqual(len(seated_healers), 4)
+        # And no healer ended up in a melee group.
+        for group in result["groups"]:
+            if group["archetype"] == comp.MELEE:
+                self.assertFalse(
+                    any(p["bucket"] == comp.HEALER for p in group["players"])
+                )
+
+    def test_a_caster_spills_to_the_healer_group_before_the_melee(self):
+        # Sized so there IS a healer group with room: six casters into one
+        # caster group leaves one over, and it should take a spellcaster seat
+        # rather than a melee one.
+        players = [
+            *[_player(f"Mage{i}", "Fire", "Ranged") for i in range(6)],
+            *[_player(f"Heal{i}", "Holy", "Healer") for i in range(3)],
+            *[_player(f"War{i}", "Fury", "Melee") for i in range(3)],
+        ]
+        result = comp.build_comp(players, 3)
+        self.assertTrue(
+            any(g["archetype"] == comp.HEALER for g in result["groups"]),
+            "test needs a healer group to be meaningful",
+        )
+        for group in result["groups"]:
+            if group["archetype"] == comp.MELEE:
+                self.assertFalse(
+                    any(p["bucket"] == comp.CASTER for p in group["players"]),
+                    "a caster went to melee while healer seats were free",
+                )
+
+    def test_a_spilled_player_says_so_in_the_trace(self):
+        players = [
+            *[_player(f"Mage{i}", "Fire", "Ranged") for i in range(7)],
+            *[_player(f"War{i}", "Fury", "Melee") for i in range(3)],
+        ]
+        result = comp.build_comp(players, 2)
+        spills = [s for s in result["explain"]["steps"] if s["stage"] == "spill"]
+        self.assertTrue(spills)
+        self.assertIn("no caster seat left anywhere", spills[0]["reason"])
 
 
 class CompSavedLayoutTests(SimpleTestCase):

@@ -41,6 +41,7 @@ MOONKIN = "moonkin"        # Balance druid — +spell crit
 SHOUT = "shout"            # Warrior — party HP
 TRUESHOT = "trueshot"      # Marksmanship hunter — +AP
 SUSTAIN = "sustain"        # Shadow priest — Vampiric Touch, party mana return
+HORN = "horn"              # Any paladin — Horn of Lordaeron, +6 Str/Agi to party
 WINDFURY = "windfury"      # Enhancement shaman (Horde)
 MANASPRING = "manaspring"  # Restoration shaman (Horde)
 
@@ -51,6 +52,7 @@ AURA_LABELS = {
     SHOUT: "Battle/Commanding Shout",
     TRUESHOT: "Trueshot Aura",
     SUSTAIN: "Vampiric Touch",
+    HORN: "Horn of Lordaeron",
     WINDFURY: "Windfury Totem",
     MANASPRING: "Mana Spring Totem",
 }
@@ -92,7 +94,9 @@ ROLE_BUCKETS = {
 
 # The party aura each spec carries. Auras belong to the spec, not the role.
 SPEC_AURAS = {
-    "Retribution": [SANCTITY],
+    "Retribution": [SANCTITY, HORN],
+    "Holy1": [HORN],
+    "Protection1": [HORN],
     "Arms": [SHOUT],
     "Fury": [SHOUT],
     "Protection": [SHOUT],
@@ -110,12 +114,24 @@ SPEC_AURAS = {
 # Which party auras actually do something for each kind of player. Used to rank
 # how well-buffed a group is when deciding who gets the good seats.
 BUFF_AURAS = {
-    TANK: (SANCTITY, LOTP, SHOUT, WINDFURY),
-    MELEE: (SANCTITY, LOTP, SHOUT, WINDFURY),
-    SHOCKADIN: (MOONKIN, SANCTITY),
+    TANK: (SANCTITY, LOTP, SHOUT, WINDFURY, HORN),
+    MELEE: (SANCTITY, LOTP, SHOUT, WINDFURY, HORN),
+    SHOCKADIN: (MOONKIN, SANCTITY, HORN),
     CASTER: (MOONKIN, SUSTAIN, MANASPRING),
     HEALER: (MOONKIN, SUSTAIN, MANASPRING),
     RANGED: (TRUESHOT, SHOUT),
+}
+
+# Where a bucket goes when its own groups are full. Casters and healers are
+# both spellcasters wanting the same auras, so they share before either is sent
+# to the melee, where neither gains anything.
+SPILL_COMPATIBLE = {
+    TANK: (MELEE,),
+    MELEE: (MELEE, RANGED),
+    CASTER: (HEALER, CASTER, RANGED),
+    HEALER: (CASTER, HEALER, RANGED),
+    SHOCKADIN: (CASTER, HEALER, MELEE),
+    RANGED: (RANGED, MELEE),
 }
 
 # Hunters who sign Ranged are the filler pool: they gain nothing from the
@@ -461,7 +477,8 @@ def _by_standing(players):
     )
 
 
-def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why=""):
+def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why="",
+            buckets=None):
     """Seat one aura carrier per group before doubling any of them up.
 
     This is the whole point of the builder: Sanctity/LotP/Moonkin and friends
@@ -473,9 +490,17 @@ def _spread(groups, pool, aura, archetypes, note=None, prefer=None, prefer_why="
     `prefer` picks between groups that are otherwise equal (e.g. a feral wants
     the tank's group for the melee crit). It never outranks covering a group
     that has none of the aura yet.
+
+    `buckets` limits which carriers this pass may move. Some players carry an
+    aura but have a placement rule of their own — a shockadin brings the Horn,
+    but "group with a boomkin" outranks spreading it — so spreading must not
+    seat them first and quietly win the argument.
     """
     label = AURA_LABELS.get(aura, aura)
-    carriers = _by_standing([p for p in pool if aura in p["auras"]])
+    carriers = _by_standing([
+        p for p in pool
+        if aura in p["auras"] and (buckets is None or p["bucket"] in buckets)
+    ])
     for player in carriers:
         # An aura carrier may also hold an Atiesh, and being seated here means
         # they skip the Atiesh pass entirely — so break ties away from a group
@@ -632,6 +657,26 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
             pool.remove(player)
             note(player, groups[0], "tank", "tank, and tanks are stacked in group 1")
 
+    # A stacked tank group with a paladin in it already has the Horn and the
+    # aura, so the seat left over is worth more to a warrior's shout than to a
+    # second paladin. Claim it now: the ret pass below would otherwise take the
+    # last seat and there'd be nothing to give the warrior.
+    if stack_tanks and groups and any(
+        p.get("class") == "Paladin" for p in groups[0].players
+    ):
+        for player in _by_standing([p for p in pool if SHOUT in p["auras"]]):
+            if groups[0].free <= 0 or groups[0].has_aura(SHOUT):
+                break
+            groups[0].add(player)
+            pool.remove(player)
+            note(
+                player,
+                groups[0],
+                SHOUT,
+                "shout for the stacked tanks — a paladin is already covering the "
+                "Horn and aura there",
+            )
+
     # One per melee group. A paladin tank wants a Retribution paladin in the
     # party for the aura, so it claims a melee group and the ret pass below
     # fills it first.
@@ -707,6 +752,12 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
         prefer=lambda g: g.has_bucket(TANK),
         prefer_why="Leader of the Pack, in with the tank for the melee crit",
     )
+    # Any leftover melee paladin covers a melee group with no Horn of Lordaeron
+    # yet — the ret pass usually does it, but a prot paladin counts too.
+    # Shockadins and paladin healers are excluded: they carry the Horn, but
+    # their own rules decide where they sit.
+    _spread(groups, pool, HORN, melee_archetypes, note, buckets=(MELEE, TANK))
+
     _spread(groups, pool, SHOUT, melee_archetypes, note)
 
     # --- Caster / healer groups -------------------------------------------
@@ -811,8 +862,11 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
             )
 
     # --- Everyone else -----------------------------------------------------
-    # Fill each player's own archetype first, then any seat that's left: a
-    # bench with empty seats above it would just be a bug in the budget.
+    # Two phases, and the split matters. Filling one bucket completely before
+    # starting the next lets an over-subscribed bucket eat another's group:
+    # twelve casters would take every seat in the healer group and leave the
+    # healers to spill into melee. So phase one seats everybody in their OWN
+    # archetype only, and nobody leaves it until every bucket has had its turn.
     for bucket, archetypes in (
         (TANK, (MELEE,)),
         (MELEE, (MELEE,)),
@@ -827,16 +881,15 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
             placed = _place(
                 groups,
                 player,
-                # Archetype dominates; buffs only choose between equals.
-                lambda g: (100 if g.archetype in archetypes else 0)
-                + _buff_score(g, bucket),
+                lambda g: (
+                    None if g.archetype not in archetypes
+                    else 100 + _buff_score(g, bucket)
+                ),
             )
             if placed is not None:
                 pool.remove(player)
                 buffs = _buff_score(placed, bucket)
-                if placed.archetype not in archetypes:
-                    reason = f"no {archetypes[0]} seat left — took a spare seat here"
-                elif player["parse"] is not None and buffs:
+                if player["parse"] is not None and buffs:
                     reason = (
                         f"{player['parse']:.0f}% parse — given a {bucket} seat in "
                         f"the best-buffed group still open ({buffs} auras)"
@@ -844,6 +897,29 @@ def build_comp(players, group_count, pins=None, stack_tanks=False, layout=None):
                 else:
                     reason = f"no aura to place around — filled a {bucket} seat"
                 note(player, placed, "fill", reason)
+
+    # Phase two: whoever's archetype ran out of seats. Compatible groups first
+    # — a caster loses less in the healer group than in a melee one — and the
+    # weakest parses spill, since phase one seated the best players already.
+    for player in _by_standing(list(pool)):
+        bucket = player["bucket"]
+        placed = _place(
+            groups,
+            player,
+            lambda g: (
+                (10 if g.archetype in SPILL_COMPATIBLE.get(bucket, ()) else 0)
+                + _buff_score(g, bucket)
+            ),
+        )
+        if placed is not None:
+            pool.remove(player)
+            note(
+                player,
+                placed,
+                "spill",
+                f"no {bucket} seat left anywhere — {placed.archetype} group was "
+                "the closest fit",
+            )
 
     for player in list(pool):
         placed = _place(groups, player, lambda g: 1)
@@ -933,10 +1009,14 @@ def warnings_for(groups, bench, group_count, stack_tanks=False):
         # Doubled-up non-stacking auras — the second carrier is wasted here.
         for aura, label in AURA_LABELS.items():
             carriers = [p.get("name") for p in g.players if aura in (p.get("auras") or [])]
+            # The stacked-tank group is composed on purpose — a warrior's shout
+            # instead of a second paladin — so it doesn't count as a group
+            # crying out for whatever it hasn't got.
             if len(carriers) > 1 and any(
                 other is not g
                 and other.archetype == g.archetype
                 and not other.has_aura(aura)
+                and not (stack_tanks and other.index == 1)
                 for other in groups
             ):
                 out.append(
@@ -958,6 +1038,14 @@ def warnings_for(groups, bench, group_count, stack_tanks=False):
                 out.append(
                     f"Group {g.index} is a caster group with no Atiesh and no boomkin."
                 )
+
+        # Every melee group wants a paladin: Horn of Lordaeron is +6 Str/Agi to
+        # the party and nothing else supplies it.
+        if g.archetype == MELEE and g.players and not g.has_aura(HORN):
+            out.append(
+                f"Group {g.index} is a melee group with no paladin — no Horn of "
+                "Lordaeron."
+            )
 
     tanks = sum(
         1 for g in groups for p in g.players if p.get("bucket") == TANK
@@ -1089,6 +1177,12 @@ def rules_summary():
                 "prefers a boomkin's group, else a warrior for shout HP.",
                 "Melee: one ret paladin per group (the paladin tank's group first), "
                 "then warriors spread for the shout.",
+                "Every melee group wants a paladin: Horn of Lordaeron is +6 Str "
+                "and Agi to the party, and nothing else supplies it. Every "
+                "paladin has it, whatever they signed as.",
+                "With tanks stacked, a paladin among them already covers the Horn "
+                "and the aura, so the spare seat goes to a warrior's shout rather "
+                "than a second paladin.",
                 "Ferals go in with a tank where there's a seat — Leader of the Pack "
                 "is melee crit and the tanks want it. A bear tank already carries "
                 "it, so ferals are sent to a tank who doesn't.",
@@ -1101,7 +1195,13 @@ def rules_summary():
                 "so it frees a healer seat for someone who does.",
                 "Shockadins: boomkin's group > ret paladin's group > any free seat.",
                 "Ranged hunters are the filler pool and take leftover seats.",
-                "Everyone else fills their own archetype best parse first, and "
+                "Everyone is seated in their OWN archetype first, before anyone "
+                "is allowed to leave it — otherwise an over-subscribed bucket "
+                "eats another's group (twelve casters will take every healer "
+                "seat and exile the healers to melee).",
+                "Only then does anyone spill, into the closest fit: casters and "
+                "healers share before either is sent to the melee.",
+                "Within that, everyone fills their own archetype best parse first, and "
                 "each takes the best-buffed seat still open — a crit or damage "
                 "aura is worth most on whoever converts it. Players with no "
                 "parse on record are seated after those who have one, not below "
