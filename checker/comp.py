@@ -300,7 +300,12 @@ def classify(spec, role):
         bucket = SHOCKADIN
 
     auras = list(SPEC_AURAS.get(spec, []))
-    # Sanctity is a Retribution aura; a paladin tank or shockadin isn't running it.
+    # Sanctity Aura needs 21 points in Retribution and a paladin runs only one
+    # aura at a time, so a tank or shockadin isn't the one supplying it. A SoD
+    # rune-tank *could* spec deep enough for it, but ours run something else —
+    # which is why a paladin tank still wants a ret in the group. Flip this and
+    # the pairing rule has to flip with it: Sanctity doesn't stack, so a tank
+    # who brings their own makes the ret beside them redundant.
     if bucket in (TANK, SHOCKADIN):
         auras = [a for a in auras if a != SANCTITY]
 
