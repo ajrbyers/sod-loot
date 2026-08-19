@@ -2396,6 +2396,45 @@ class CompSuggestionTests(SimpleTestCase):
         comp.suggestions_from_logs(players, board)
         self.assertIsNone(players[0]["suggestion"])
 
+    def test_a_tank_signed_as_tank_is_not_flagged(self):
+        players = [_player("Wiells", "Protection", "Tank")]
+        board = [{"name": "Wiells", "overall": {"spec": "Tank", "dps": 500}}]
+        comp.suggestions_from_logs(players, board)
+        self.assertIsNone(players[0]["suggestion"])
+
+
+class CompSuggestionEndpointTests(TestCase):
+    """The endpoint used to rebuild players from names alone, defaulting every
+    bucket to "ranged" — so a tank registered as a tank was flagged for
+    "parsing as Tank". The signup bucket now travels with the name."""
+
+    def setUp(self):
+        self.client.post("/comp", {"password": "carnage"})
+
+    def fetch(self, names, buckets):
+        meta = {"cached": True, "age": 0, "ttl": 300}
+        board = {"players": [
+            {"name": "Wiells", "overall": {"spec": "Tank", "dps": 500}},
+            {"name": "Sneaky", "overall": {"spec": "Tank", "dps": 400}},
+        ]}
+        with mock.patch.object(wcl, "get_leaderboard", return_value=(board, meta)):
+            return self.client.get(
+                "/api/comp/suggestions", {"names": names, "buckets": buckets}
+            )
+
+    def test_the_signup_bucket_travels_with_the_name(self):
+        data = self.fetch("Wiells,Sneaky", "tank,melee").json()
+        # Wiells signed as tank and logs as Tank: nothing to suggest. Sneaky
+        # signed melee but logs as Tank: the ⚑ still fires.
+        self.assertNotIn("Wiells", data["suggestions"])
+        self.assertEqual(data["suggestions"]["Sneaky"]["bucket"], comp.TANK)
+
+    def test_missing_buckets_fall_back_to_the_default(self):
+        # Old clients (or a shorter buckets list) still work; the affected
+        # names just keep the pre-fix behaviour.
+        data = self.fetch("Wiells,Sneaky", "").json()
+        self.assertEqual(data["suggestions"]["Wiells"]["bucket"], comp.TANK)
+
 
 @override_settings(ROSTER_FILE="/nonexistent/grm.csv")
 class CompEndpointTests(TestCase):

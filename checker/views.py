@@ -819,13 +819,23 @@ def api_comp_suggestions(request):
     names = [n.strip() for n in (request.GET.get("names") or "").split(",") if n.strip()]
     if not names:
         return JsonResponse({"suggestions": {}})
+    # The signup bucket rides along with each name; without it every player
+    # here would default to "ranged" and a tank who signed as tank would be
+    # flagged for playing tank.
+    buckets = [b.strip().lower() for b in (request.GET.get("buckets") or "").split(",")]
     try:
         board, meta = wcl.get_leaderboard()
     except wcl.WCLError as exc:
         return JsonResponse({"error": str(exc)}, status=502)
 
     rows = board.get("players") or []
-    players = [comp.make_player(n) for n in names]
+    players = []
+    for i, name in enumerate(names):
+        bucket = buckets[i] if i < len(buckets) else ""
+        if bucket in comp.BUCKET_LABELS:
+            players.append(comp.make_player(name, bucket=bucket))
+        else:
+            players.append(comp.make_player(name))
     comp.suggestions_from_logs(players, rows)
     return JsonResponse(
         {

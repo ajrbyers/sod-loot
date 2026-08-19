@@ -554,14 +554,18 @@ async function scanAtiesh() {
 
 // Warcraft Logs cross-check: advisory only, never applied on its own.
 async function loadSuggestions() {
-  const names = allPlayers().map(p => p.name).join(",");
+  const players = allPlayers();
+  const names = players.map(p => p.name).join(",");
+  // Buckets ride along so the server compares logs against the real signup,
+  // not a default — otherwise a tank signed as tank gets flagged as a tank.
+  const buckets = players.map(p => p.bucket || "").join(",");
   try {
-    const r = await fetch(`/api/comp/suggestions?names=${encodeURIComponent(names)}`);
+    const r = await fetch(`/api/comp/suggestions?names=${encodeURIComponent(names)}&buckets=${encodeURIComponent(buckets)}`);
     const d = await r.json();
     let any = false;
     Object.entries(d.suggestions || {}).forEach(([name, s]) => {
       const p = findPlayer(name);
-      if (p) { p.suggestion = s; any = true; }
+      if (p && s.bucket !== p.bucket) { p.suggestion = s; any = true; }
     });
     let parsed = 0;
     Object.entries(d.parses || {}).forEach(([name, standing]) => {
