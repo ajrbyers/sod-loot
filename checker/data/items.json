@@ -1,5 +1,5 @@
 {
-  "_comment": "Edit this file to maintain the loot catalogue. Any item with requires_parse=true is a 'rare item' from the loot rules and needs the 75% best-average parse to SR/roll. Everything not listed here falls under standard SR > MS > OS rules and needs no parse. The 8 rare items below come straight from the loot-rules doc.",
+  "_comment": "Edit this file to maintain the loot catalogue. Any item with requires_parse=true is a 'rare item' from the loot rules and needs the 75% best-average parse to SR/roll. Everything not listed here falls under standard SR > MS > OS rules and needs no parse. Names must match Wowhead's exactly — the SR audit classifies by exact name. mage_heal_parse=true means a reserving Arcane mage also has their heal parse checked (Arcane is the healer-mage spec on softres). The rare items below come straight from the loot-rules doc.",
   "items": [
     {
       "name": "Abandoned Experiment",
@@ -20,7 +20,7 @@
       "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
     },
     {
-      "name": "Mirage",
+      "name": "Mirage, Rod of Illusion",
       "raid": "Scarlet Enclave",
       "requires_parse": true,
       "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
@@ -35,7 +35,8 @@
       "name": "Putress' Completed Diary",
       "raid": "Naxxramas / Scarlet Enclave",
       "requires_parse": true,
-      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll."
+      "mage_heal_parse": true,
+      "note": "Rare item — 75%+ best average + 4/8 weeks attendance required to SR or roll. An Arcane mage reserving this also has their heal parse checked (Arcane is the healer-mage spec; they parse HPS, not DPS)."
     },
     {
       "name": "Mason's Fraternity Ring",

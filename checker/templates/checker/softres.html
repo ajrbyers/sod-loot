@@ -95,7 +95,10 @@ function itemVerdict(it, e) {
   if (it.type === "token") return "pass";
   const checks = [e.set_bonus_ok];
   if (it.type === "rare") {
-    checks.push(e.attendance.passed, e.parse.passed);
+    // A heal-parse item (Putress' Diary held by a mage) passes the parse
+    // gate on either metric — healer-mages parse HPS, not DPS.
+    const parseOk = e.parse.passed || (it.heal_parse && e.heal && e.heal.passed);
+    checks.push(e.attendance.passed, parseOk);
     if (e.enchants.verified) checks.push(e.enchants.fully_enchanted);
   }
   if (checks.some(c => !c)) return "fail";
@@ -165,9 +168,14 @@ function renderRow(i, reserve, e, error) {
     gearOk ? `${e.gear.set_bonus.count}/${e.gear.set_bonus.need}` : "",
     { needed: need.setBonus, verified: gearOk });
   const best = e.parse.best_average;
-  cells += reqCell(best != null && best >= e.parse.threshold,
-    `${best != null ? best.toFixed(1) : "—"}% ${e.parse.metric}`,
-    { needed: need.parse });
+  let parsePass = best != null && best >= e.parse.threshold;
+  let parseText = `${best != null ? best.toFixed(1) : "—"}% ${e.parse.metric}`;
+  if (e.heal) {
+    const hbest = e.heal.best_average;
+    parsePass = parsePass || (hbest != null && hbest >= e.heal.threshold);
+    parseText += ` · ${hbest != null ? hbest.toFixed(1) : "—"}% hps`;
+  }
+  cells += reqCell(parsePass, parseText, { needed: need.parse });
   cells += reqCell(e.enchants.fully_enchanted,
     e.enchants.fully_enchanted ? "✓" : `${e.enchants.missing.length} missing`,
     { needed: need.parse, verified: e.enchants.verified });
@@ -204,20 +212,28 @@ async function pool(tasks, width) {
 }
 
 async function checkReserve(raidType, reserve, i) {
+  const check = metric => fetch("/api/eligibility", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+    body: JSON.stringify({
+      main: reserve.name,
+      toons: reserve.alts,
+      raid: raidType,
+      metric,
+      remember: false,
+    }),
+  });
+  // Heal-parse items (a mage holding Putress' Diary): an HPS check rides
+  // alongside the DPS one. Healers already get HPS as their main metric.
+  const wantHeals = !reserve.healer && reserve.items.some(it => it.heal_parse);
   try {
-    const res = await fetch("/api/eligibility", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
-      body: JSON.stringify({
-        main: reserve.name,
-        toons: reserve.alts,
-        raid: raidType,
-        metric: reserve.healer ? "hps" : "dps",
-        remember: false,
-      }),
-    });
+    const [res, healRes] = await Promise.all([
+      check(reserve.healer ? "hps" : "dps"),
+      wantHeals ? check("hps") : null,
+    ]);
     const e = await res.json();
     if (!res.ok) { renderRow(i, reserve, null, e.error || "Check failed."); return; }
+    if (healRes && healRes.ok) e.heal = (await healRes.json()).parse;
     renderRow(i, reserve, e);
   } catch (err) {
     renderRow(i, reserve, null, "Network error: " + err.message);

@@ -451,6 +451,7 @@ def api_softres(request):
 
     reserves = []
     for r in raid.get("reserves") or []:
+        spec = r.get("spec")
         entries = []
         for item_id in r.get("items") or []:
             name = softres.item_name(item_id)
@@ -460,9 +461,12 @@ def api_softres(request):
                     "name": name,
                     "type": items.classify(name),
                     "contested": holders.get(item_id, 0) > 1,
+                    # An arcane mage holding a heal-parse item (Putress'
+                    # Diary) is a healer-mage: the page checks HPS alongside.
+                    "heal_parse": spec in softres.MAGE_HEALER_SPECS
+                    and (name or "").lower() in items.mage_heal_parse_items(),
                 }
             )
-        spec = r.get("spec")
         reserves.append(
             {
                 "name": r.get("name"),

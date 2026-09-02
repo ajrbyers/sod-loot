@@ -40,6 +40,17 @@ def all_items():
     return _catalogue()
 
 
+@functools.lru_cache(maxsize=1)
+def mage_heal_parse_items():
+    """Lowercased names of rare items where a reserving Arcane mage's heal
+    parse also counts. Arcane is the healer-mage spec on softres, but it isn't
+    in HEALER_SPECS: mages reserve dps loot too, so only these items trigger
+    the extra HPS check rather than replacing the DPS one."""
+    return frozenset(
+        it["name"].lower() for it in _catalogue() if it.get("mage_heal_parse")
+    )
+
+
 def _requirements(item_type):
     """What a toon needs to SR an item of this type.
 

@@ -1265,6 +1265,9 @@ class SoftresHelperTests(SimpleTestCase):
     def test_classify_covers_all_three_tiers(self):
         self.assertEqual(items.classify("Abandoned Experiment"), "rare")
         self.assertEqual(items.classify("Putress' Completed Diary"), "rare")
+        # Wowhead's full name for the item, not the doc's shorthand "Mirage" —
+        # classify() matches exact names, so the catalogue must use it.
+        self.assertEqual(items.classify("Mirage, Rod of Illusion"), "rare")
         self.assertEqual(items.classify("consecrated gauntlets"), "token")
         self.assertEqual(items.classify("Desecrated Bindings"), "token")
         self.assertEqual(items.classify("Scarlet Steed"), "standard")
@@ -1290,6 +1293,18 @@ class SoftresHelperTests(SimpleTestCase):
         # House rule: our holy paladins are shockadins — damage parse counts.
         self.assertNotIn(65, softres.HEALER_SPECS)
         self.assertIn(257, softres.HEALER_SPECS)  # holy priests still heal
+
+    def test_searching_the_shorthand_still_finds_mirage(self):
+        result = items.search("mirage")
+        self.assertEqual(result["item_type"], "rare")
+        self.assertEqual(result["matches"][0]["name"], "Mirage, Rod of Illusion")
+
+    def test_mage_heal_parse_items_come_from_the_catalogue(self):
+        self.assertEqual(
+            items.mage_heal_parse_items(), {"putress' completed diary"}
+        )
+        # Arcane is the healer-mage spec; fire/frost mages are dps.
+        self.assertEqual(softres.MAGE_HEALER_SPECS, {62})
 
     def test_extra_tokens_count_as_tokens(self):
         # House rule: Crusader's Chalice is a token despite the name.
@@ -1325,9 +1340,32 @@ SOFTRES_RAID = {
             "items": [333, 222],
             "user": None,
         },
+        # An arcane mage (spec 62 — the healer-mage spec) holding Putress'
+        # Diary and another rare item: only the Diary triggers the extra
+        # heal-parse check.
+        {
+            "name": "Arcanister",
+            "spec": 62,
+            "note": None,
+            "items": [444, 555],
+            "user": None,
+        },
+        # A frost mage (spec 64) holding the Diary: dps spec, no heal check.
+        {
+            "name": "Frostbolta",
+            "spec": 64,
+            "note": None,
+            "items": [444],
+            "user": None,
+        },
     ],
 }
-SOFTRES_ITEM_NAMES = {111: "Abandoned Experiment", 222: "Consecrated Gauntlets"}
+SOFTRES_ITEM_NAMES = {
+    111: "Abandoned Experiment",
+    222: "Consecrated Gauntlets",
+    444: "Putress' Completed Diary",
+    555: "Mirage, Rod of Illusion",
+}
 
 
 @override_settings(ROSTER_FILE="/nonexistent/grm.csv")
@@ -1361,7 +1399,7 @@ class SoftresEndpointTests(TestCase):
         self.assertEqual(data["raid"]["instance"], "Scarlet Enclave")
         self.assertEqual(data["raid"]["creator"], "dread_ful")
 
-        melee, healer = data["reserves"]
+        melee, healer, arcane, frost = data["reserves"]
         self.assertEqual(melee["name"], "Boliath")
         self.assertFalse(melee["healer"])
         self.assertEqual(melee["discord"], ".czeq")
@@ -1383,9 +1421,40 @@ class SoftresEndpointTests(TestCase):
         # Unresolvable item degrades to name/type None, not an error.
         self.assertEqual(
             healer["items"][0],
-            {"id": 333, "name": None, "type": None, "contested": False},
+            {
+                "id": 333,
+                "name": None,
+                "type": None,
+                "contested": False,
+                "heal_parse": False,
+            },
         )
         self.assertTrue(healer["items"][1]["contested"])
+
+    def test_an_arcane_mages_diary_reserve_flags_the_heal_parse_check(self):
+        data = self.fetch().json()
+        melee, healer, arcane, frost = data["reserves"]
+
+        # Only the Diary held by the arcane mage gets the extra HPS check;
+        # their other rare item, and everyone else's items, stay dps-judged.
+        self.assertEqual(
+            [(i["name"], i["type"], i["heal_parse"]) for i in arcane["items"]],
+            [
+                ("Putress' Completed Diary", "rare", True),
+                ("Mirage, Rod of Illusion", "rare", False),
+            ],
+        )
+        # Arcane isn't a HEALER_SPEC: the dps parse stays the main metric,
+        # the Diary just adds the HPS check.
+        self.assertFalse(arcane["healer"])
+
+        # Fire/frost mages are dps — the same Diary carries no heal check.
+        self.assertEqual(
+            [(i["name"], i["heal_parse"]) for i in frost["items"]],
+            [("Putress' Completed Diary", False)],
+        )
+        self.assertFalse(any(i["heal_parse"] for i in melee["items"]))
+        self.assertFalse(any(i["heal_parse"] for i in healer["items"]))
 
     def test_accepts_a_full_softres_url(self):
         response = self.fetch(raid="https://softres.it/raid/9b69QNaE")
@@ -1402,7 +1471,7 @@ class SoftresEndpointTests(TestCase):
         self.assertEqual(audits.count(), 1)
         audit = audits.get()
         self.assertEqual(audit.instance, "Scarlet Enclave")
-        self.assertEqual(audit.reserve_count, 2)
+        self.assertEqual(audit.reserve_count, 4)
         self.assertEqual(audit.raid_date, 1786042800)
 
     def test_page_lists_recent_audits(self):

@@ -37,11 +37,15 @@ Full loot rules: <https://docs.google.com/document/d/1JuMnO4QfMjLDNtPWO0-iHN9khz
 
 ## The rare (parse-gated) items
 
-Abandoned Experiment · Sir Dornel's Didgeridoo · Queensfall · Mirage ·
-Infusion of Souls · Putress' Diary · Mason's Fraternity Ring ·
-Might of the Scourge · Power of the Scourge (Sapphiron shoulder enchants).
+Abandoned Experiment · Sir Dornel's Didgeridoo · Queensfall ·
+Mirage, Rod of Illusion · Infusion of Souls · Putress' Diary ·
+Mason's Fraternity Ring · Might of the Scourge · Power of the Scourge
+(Sapphiron shoulder enchants).
 
-Edit `checker/data/items.json` to maintain the catalogue.
+Edit `checker/data/items.json` to maintain the catalogue. Names must match
+Wowhead's exactly — the SR audit classifies items by exact name. An Arcane
+mage reserving Putress' Completed Diary also has their heal parse checked
+(Arcane is the healer-mage spec; Fire/Frost mages stay dps-judged).
 
 ## Run it
 

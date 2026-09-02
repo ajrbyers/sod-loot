@@ -27,6 +27,12 @@ ITEM_TTL = 30 * 24 * 3600
 # in SoD ours are shockadins, so their damage parse is the one that counts.
 HEALER_SPECS = {105, 256, 257, 264}
 
+# Arcane (62) is the healer-mage spec on softres — SoD mage healers sign up
+# as Arcane; Fire (63) and Frost (64) are dps. An arcane mage reserving a
+# heal-parse item (items.json mage_heal_parse) gets an HPS check alongside
+# the usual DPS one.
+MAGE_HEALER_SPECS = {62}
+
 _ID_RE = re.compile(r"^[A-Za-z0-9]{4,20}$")
 _URL_RE = re.compile(r"softres\.it/raid/([A-Za-z0-9]{4,20})", re.IGNORECASE)
 
