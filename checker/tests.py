@@ -1474,6 +1474,19 @@ class SoftresEndpointTests(TestCase):
         self.assertEqual(audit.reserve_count, 4)
         self.assertEqual(audit.raid_date, 1786042800)
 
+    def test_fetch_snapshots_the_reserves_for_the_contested_sweep(self):
+        self.fetch()
+        audit = SoftresAudit.objects.get(raid_id="9b69QNaE")
+        self.assertEqual(
+            audit.reserves,
+            [
+                {"name": "Boliath", "items": [111, 111, 222]},
+                {"name": "Compostel", "items": [333, 222]},
+                {"name": "Arcanister", "items": [444, 555]},
+                {"name": "Frostbolta", "items": [444]},
+            ],
+        )
+
     def test_page_lists_recent_audits(self):
         SoftresAudit.objects.create(
             raid_id="oldRaid1", instance="Naxxramas", reserve_count=25
@@ -1489,6 +1502,168 @@ class SoftresEndpointTests(TestCase):
             response = self.client.get("/api/softres", {"raid": "9b69QNaE"})
         self.assertEqual(response.status_code, 502)
         self.assertIn("softres down", response.json()["error"])
+
+
+class ContestedSummaryTests(TestCase):
+    """The /contested sweep over every stored softres sheet.
+
+    Regression targets: distinct-person counting (self-stacking never
+    contests), legacy rows without snapshots getting backfilled from
+    softres.it, and a vanished sheet being skipped rather than fatal.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Two SE sheets and a Naxx sheet with stored snapshots. Item 111 is
+        # contested on both SE sheets; 222 is stacked x3 by one person (never
+        # contested); 333 is reserved once per sheet (seen twice, uncontested);
+        # 444 is contested on the Naxx sheet only.
+        SoftresAudit.objects.create(
+            raid_id="sheetA",
+            instance="Scarlet Enclave",
+            reserve_count=3,
+            reserves=[
+                {"name": "Boliath", "items": [111, 222, 222, 222]},
+                {"name": "Compostel", "items": [111, 333]},
+                {"name": "Arcanister", "items": [111]},
+            ],
+        )
+        SoftresAudit.objects.create(
+            raid_id="sheetB",
+            instance="Scarlet Enclave",
+            reserve_count=2,
+            reserves=[
+                {"name": "Boliath", "items": [111]},
+                {"name": "Frostbolta", "items": [111, 333]},
+            ],
+        )
+        SoftresAudit.objects.create(
+            raid_id="sheetC",
+            instance="Naxxramas",
+            reserve_count=2,
+            reserves=[
+                {"name": "Paddebrenner", "items": [444]},
+                {"name": "Lemperen", "items": [444]},
+            ],
+        )
+
+    def setUp(self):
+        self.client.post("/contested", {"password": "carnage"})
+
+    def sweep(self, query=""):
+        with mock.patch.object(
+            softres, "item_name", side_effect=SOFTRES_ITEM_NAMES.get
+        ):
+            return self.client.get(f"/api/contested{query}")
+
+    def test_requires_the_password_cookie(self):
+        from django.test import Client
+
+        self.assertEqual(Client().get("/api/contested").status_code, 403)
+        response = Client().get("/contested")
+        self.assertContains(response, 'name="password"')
+
+    def test_aggregates_distinct_reservers_across_sheets(self):
+        data = self.sweep().json()
+        self.assertEqual(data["sheets_scanned"], 3)
+        self.assertEqual(data["sheets_missing"], [])
+
+        rows = {r["id"]: r for r in data["items"]}
+        # 111: 3 + 2 distinct reservers over two contested SE sheets.
+        self.assertEqual(rows[111]["name"], "Abandoned Experiment")
+        self.assertEqual(rows[111]["contested_sheets"], 2)
+        self.assertEqual(rows[111]["sheets"], 2)
+        self.assertEqual(rows[111]["total_reservers"], 5)
+        self.assertEqual(rows[111]["max_reservers"], 3)
+        self.assertEqual(rows[111]["instances"], ["Scarlet Enclave"])
+        self.assertTrue(rows[111]["contested"])
+        # 222: one person stacking x3 is one reserver — never contested.
+        self.assertEqual(rows[222]["contested_sheets"], 0)
+        self.assertEqual(rows[222]["total_reservers"], 1)
+        self.assertFalse(rows[222]["contested"])
+        # 333: seen on both SE sheets, one reserver each — uncontested.
+        self.assertEqual(rows[333]["sheets"], 2)
+        self.assertEqual(rows[333]["contested_sheets"], 0)
+        # 444: contested once, on the Naxx sheet.
+        self.assertEqual(rows[444]["contested_sheets"], 1)
+        self.assertEqual(rows[444]["instances"], ["Naxxramas"])
+
+        # Ranked most-contested first: 111 (2 sheets), then 444 (1 sheet),
+        # then the uncontested by total reservers.
+        self.assertEqual([r["id"] for r in data["items"]][:2], [111, 444])
+
+    def test_legacy_row_without_snapshot_is_fetched_and_backfilled(self):
+        SoftresAudit.objects.create(
+            raid_id="legacy1", instance="Naxxramas", reserve_count=2
+        )
+        raid = {
+            "reserves": [
+                {"name": "Shadøwrend", "items": [444]},
+                {"name": "Wiella", "items": [444]},
+            ]
+        }
+        meta = {"cached": False, "age": 0, "ttl": 300}
+        with mock.patch.object(
+            softres, "get_raid", return_value=(raid, meta)
+        ) as get_raid, mock.patch.object(
+            softres, "item_name", side_effect=SOFTRES_ITEM_NAMES.get
+        ):
+            data = self.client.get("/api/contested").json()
+
+        # Only the snapshotless row hits softres.it; the rest use snapshots.
+        get_raid.assert_called_once_with("legacy1", force=False)
+        self.assertEqual(data["sheets_scanned"], 4)
+        rows = {r["id"]: r for r in data["items"]}
+        self.assertEqual(rows[444]["contested_sheets"], 2)
+        self.assertEqual(
+            SoftresAudit.objects.get(raid_id="legacy1").reserves,
+            [
+                {"name": "Shadøwrend", "items": [444]},
+                {"name": "Wiella", "items": [444]},
+            ],
+        )
+
+    def test_vanished_sheet_is_skipped_not_fatal(self):
+        SoftresAudit.objects.create(
+            raid_id="gone404", instance="Naxxramas", reserve_count=2
+        )
+        with mock.patch.object(
+            softres, "get_raid", side_effect=softres.SoftresError("HTTP 404")
+        ), mock.patch.object(
+            softres, "item_name", side_effect=SOFTRES_ITEM_NAMES.get
+        ):
+            response = self.client.get("/api/contested")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["sheets_scanned"], 3)
+        self.assertEqual(data["sheets_missing"], ["gone404"])
+
+    def test_force_refetches_every_sheet_but_keeps_vanished_snapshots(self):
+        fresh = {"reserves": [{"name": "Boliath", "items": [555]}]}
+        meta = {"cached": False, "age": 0, "ttl": 300}
+
+        def fetch(raid_id, force=False):
+            if raid_id == "sheetA":
+                return fresh, meta
+            raise softres.SoftresError("HTTP 404")
+
+        with mock.patch.object(
+            softres, "get_raid", side_effect=fetch
+        ) as get_raid, mock.patch.object(
+            softres, "item_name", side_effect=SOFTRES_ITEM_NAMES.get
+        ):
+            data = self.client.get("/api/contested", {"force": "1"}).json()
+
+        self.assertEqual(get_raid.call_count, 3)
+        # sheetA's snapshot is replaced; the vanished sheets keep theirs and
+        # still count, so history never regresses under a refresh.
+        self.assertEqual(SoftresAudit.objects.get(raid_id="sheetA").reserves, fresh["reserves"])
+        self.assertEqual(data["sheets_scanned"], 3)
+        self.assertEqual(data["sheets_missing"], [])
+        rows = {r["id"]: r for r in data["items"]}
+        self.assertNotIn(222, rows)  # gone with sheetA's old snapshot
+        self.assertEqual(rows[444]["contested_sheets"], 1)  # sheetC kept
 
 
 @override_settings(ROSTER_FILE="/nonexistent/grm.csv")

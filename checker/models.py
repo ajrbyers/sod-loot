@@ -10,6 +10,11 @@ class SoftresAudit(models.Model):
     instance = models.CharField(max_length=64, blank=True)
     raid_date = models.BigIntegerField(null=True, blank=True)
     reserve_count = models.IntegerField(default=0)
+    # [{"name": <reserver>, "items": [<item_id>, ...]}, ...] — snapshotted at
+    # fetch time so contested-item history survives softres.it deleting the
+    # sheet (and its 300s cache expiring). Empty list on rows audited before
+    # the field existed; the contested sweep backfills them where it can.
+    reserves = models.JSONField(default=list, blank=True)
     updated = models.DateTimeField(auto_now=True)
 
     class Meta:
