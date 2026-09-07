@@ -1,0 +1,162 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contested Items · SoD Loot</title>
+{% include "checker/_style.html" %}
+<style>
+  /* Horizontal bar chart: one measure (sheets contested on), site palette. */
+  .barchart { margin-top: 6px; }
+  .barrow { display: grid; grid-template-columns: minmax(140px, 34%) 1fr 3.2em;
+            align-items: center; gap: 8px; padding: 3px 0; }
+  .barrow .blabel { font-size: 13px; overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; text-align: right; }
+  .barrow .btrack { position: relative; height: 14px; }
+  .barrow .bfill { position: absolute; inset: 0 auto 0 0; min-width: 2px;
+                   background: var(--blue); border-radius: 0 4px 4px 0; }
+  .barrow .bval { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .barrow:hover .bfill { filter: brightness(1.15); }
+  .chart-title { font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 4px; }
+  .chip { cursor: pointer; user-select: none; }
+  .chip.on { border-color: var(--gold); color: var(--gold);
+             background: color-mix(in srgb, var(--gold) 12%, transparent); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  a.itemlink { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+  a.itemlink:hover { color: var(--gold); }
+</style>
+</head>
+<body>
+{% include "checker/_chrome.html" %}
+<div class="wrap">
+  <header>
+    <h1>⚔ Contested Items</h1>
+    <p>Every soft-reserve sheet the audit page has ever seen ({{ audit_count }} so far),
+       swept for the items the guild keeps rolling against each other for. Contested =
+       reserved by 2+ different people on one sheet — stacking an item ×3 yourself
+       doesn't count.</p>
+  </header>
+
+  <div class="card">
+    <div id="out" class="result"><div class="spin">Sweeping stored reserve sheets…</div></div>
+  </div>
+
+  <footer>Counts come from stored sheet snapshots; sheets audited before snapshots
+    existed are fetched from softres.it once and remembered.</footer>
+</div>
+
+<script>
+const out = document.getElementById("out");
+let DATA = null;
+let instanceFilter = "all";
+let showAll = false;
+
+function itemLabel(it) {
+  return it.name ? escape(it.name) : `item ${escape(it.id)}`;
+}
+
+function itemLink(it) {
+  const label = itemLabel(it);
+  return `<a class="itemlink" target="_blank" rel="noopener"
+    href="https://www.wowhead.com/classic/item=${encodeURIComponent(it.id)}">${label}</a>`;
+}
+
+function visibleRows() {
+  return DATA.items.filter(it =>
+    (showAll || it.contested) &&
+    (instanceFilter === "all" || it.instances.includes(instanceFilter)));
+}
+
+function renderChart(rows) {
+  // Bars carry total reservers: sheet counts tie too easily (with one stored
+  // sheet, everything contested is "1") while people-rolling-for-it always
+  // discriminates. Sorted by the bar's own measure, so lengths read cleanly.
+  const top = rows.filter(it => it.contested)
+    .slice().sort((a, b) => b.total_reservers - a.total_reservers).slice(0, 15);
+  if (!top.length) return "";
+  const max = Math.max(...top.map(it => it.total_reservers));
+  let html = `<div class="chart-title">People rolling for it — total reservers across all sheets, top ${top.length}</div>
+    <div class="barchart">`;
+  top.forEach(it => {
+    const pct = (it.total_reservers / max) * 100;
+    html += `<div class="barrow" title="${itemLabel(it)}: ${it.total_reservers} reservers in total · contested on ${it.contested_sheets} of ${it.sheets} sheets · worst sheet ${it.max_reservers} people">
+      <div class="blabel">${itemLabel(it)}</div>
+      <div class="btrack"><div class="bfill" style="width:${pct}%"></div></div>
+      <div class="bval">${it.total_reservers}</div>
+    </div>`;
+  });
+  return html + "</div>";
+}
+
+function renderTable(rows) {
+  if (!rows.length) return '<div class="check"><div class="body">Nothing to show — no stored sheets match.</div></div>';
+  let html = `<div class="dps-scroll"><table class="dps-table"><thead><tr>
+    <th class="r">#</th><th>Item</th><th>Instance</th>
+    <th class="num">Contested on</th><th class="num">Seen on</th>
+    <th class="num">Total reservers</th><th class="num">Worst sheet</th>
+    </tr></thead><tbody>`;
+  rows.forEach((it, i) => {
+    html += `<tr>
+      <td class="r cls">${i + 1}</td>
+      <td>${itemLink(it)}${it.contested ? " ⚔" : ""}</td>
+      <td class="cls">${escape(it.instances.join(", ") || "—")}</td>
+      <td class="num">${it.contested_sheets ? `${it.contested_sheets} sheet${it.contested_sheets > 1 ? "s" : ""}` : '<span class="cls">never</span>'}</td>
+      <td class="num cls">${it.sheets}</td>
+      <td class="num">${it.total_reservers}</td>
+      <td class="num cls">${it.max_reservers} ${it.max_reservers > 1 ? "people" : "person"}</td>
+    </tr>`;
+  });
+  return html + "</tbody></table></div>";
+}
+
+function chip(label, on, attrs) {
+  return `<a href="#" class="pill chip ${on ? "on" : ""}" ${attrs}>${escape(label)}</a>`;
+}
+
+function render() {
+  const instances = [...new Set(DATA.items.flatMap(it => it.instances))].sort();
+  const rows = visibleRows();
+  let html = `<div class="filters"><span class="lbl cls">Instance:</span>
+    ${chip("All", instanceFilter === "all", 'data-inst="all"')}
+    ${instances.map(n => chip(n, instanceFilter === n, `data-inst="${escape(n)}"`)).join("")}
+    ${chip(showAll ? "Hide uncontested" : "Show uncontested too", showAll, 'data-toggle="all"')}
+  </div>`;
+  html += renderChart(rows);
+  html += renderTable(rows);
+  if (DATA.sheets_missing.length) {
+    html += `<div class="check"><div class="body"><div class="detail">
+      ${DATA.sheets_missing.length} stored sheet${DATA.sheets_missing.length > 1 ? "s are" : " is"}
+      no longer on softres.it and had no snapshot: ${escape(DATA.sheets_missing.join(", "))}</div></div></div>`;
+  }
+  const c = DATA.cache || {};
+  const m = Math.floor((c.age_seconds || 0) / 60);
+  html += `<div class="cacheline"><span>${DATA.sheets_scanned} sheets scanned${c.cached
+    ? ` · softres data cached ${m < 1 ? "just now" : `${m} min ago`}` : ""}</span>
+    <button class="ghost small" onclick="load(true)">↻ Re-fetch all sheets</button></div>`;
+  out.innerHTML = html;
+
+  out.querySelectorAll(".chip").forEach(el => el.addEventListener("click", e => {
+    e.preventDefault();
+    if (el.dataset.toggle) showAll = !showAll;
+    else instanceFilter = el.dataset.inst;
+    render();
+  }));
+}
+
+async function load(force) {
+  out.innerHTML = `<div class="spin">${force ? "Re-fetching every sheet from softres.it…" : "Sweeping stored reserve sheets…"}</div>`;
+  try {
+    const res = await fetch(`/api/contested${force ? "?force=1" : ""}`);
+    const d = await res.json();
+    if (!res.ok) { out.innerHTML = `<div class="error">${escape(d.error || "Something went wrong.")}</div>`; return; }
+    DATA = d;
+    render();
+  } catch (e) {
+    out.innerHTML = `<div class="error">Network error: ${escape(e.message)}</div>`;
+  }
+}
+load(false);
+</script>
+</body>
+</html>

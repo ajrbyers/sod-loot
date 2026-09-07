@@ -438,6 +438,7 @@ def api_softres(request):
             "instance": (instances[0].get("name") if instances else "") or "",
             "raid_date": raid.get("raid_date"),
             "reserve_count": len(raid.get("reserves") or []),
+            "reserves": softres.reserve_snapshot(raid),
         },
     )
 
@@ -495,6 +496,32 @@ def api_softres(request):
             "cache": apicache.summarise([meta]),
         }
     )
+
+
+@password_protected
+def contested(request):
+    response = render(
+        request,
+        "checker/contested.html",
+        {"audit_count": SoftresAudit.objects.count()},
+    )
+    response["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
+@require_GET
+@require_page_access
+def api_contested(request):
+    """The most contested items across every stored softres sheet.
+
+    Contested = 2+ distinct reservers on one sheet, the same rule as the
+    single-sheet audit. ?force=1 re-fetches every sheet from softres.it."""
+    force = request.GET.get("force") == "1"
+    summary, metas = softres.contested_summary(
+        SoftresAudit.objects.all(), force=force
+    )
+    summary["cache"] = apicache.summarise(metas)
+    return JsonResponse(summary)
 
 
 # ---------------------------------------------------------------------------

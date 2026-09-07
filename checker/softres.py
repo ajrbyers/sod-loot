@@ -82,6 +82,91 @@ def get_raid(raid_id, force=False):
     return apicache.get_or_set(f"softres:raid:{raid_id}", produce, force=force, ttl=RAID_TTL)
 
 
+def reserve_snapshot(raid):
+    """Slim a raw softres payload to the per-reserver item lists the contested
+    sweep needs: [{"name": <reserver>, "items": [<item_id>, ...]}, ...]."""
+    return [
+        {"name": r.get("name") or "", "items": list(r.get("items") or [])}
+        for r in raid.get("reserves") or []
+    ]
+
+
+def contested_summary(audits, force=False):
+    """Aggregate contested items across the stored softres sheets.
+
+    Each sheet contributes its *distinct* reservers per item — one person
+    stacking an item ×3 never contests it, matching the single-sheet audit.
+    Rows audited before snapshots existed are fetched live and backfilled;
+    with force=True every sheet is re-fetched (falling back to its stored
+    snapshot). Sheets softres.it no longer serves are skipped, not fatal.
+
+    Returns (summary, cache_metas): summary is {"items": [...], "sheets_scanned",
+    "sheets_missing"} with items ranked most-contested first.
+    """
+    agg = {}  # item_id -> aggregate row
+    metas = []
+    scanned = 0
+    missing = []
+    for audit in audits:
+        snapshot = audit.reserves
+        if force or not snapshot:
+            try:
+                raid, meta = get_raid(audit.raid_id, force=force)
+            except SoftresError:
+                if not snapshot:
+                    missing.append(audit.raid_id)
+                    continue
+                # The sheet is gone from softres.it; the snapshot is history.
+            else:
+                metas.append(meta)
+                snapshot = reserve_snapshot(raid)
+                if snapshot != audit.reserves:
+                    audit.reserves = snapshot
+                    audit.save(update_fields=["reserves", "updated"])
+        scanned += 1
+
+        holders = {}  # item_id -> distinct reserver names on this sheet
+        for r in snapshot:
+            who = (r.get("name") or "").strip().casefold()
+            for item_id in set(r.get("items") or []):
+                holders.setdefault(item_id, set()).add(who)
+
+        for item_id, names in holders.items():
+            row = agg.setdefault(
+                item_id,
+                {
+                    "id": item_id,
+                    "instances": set(),
+                    "sheets": 0,
+                    "contested_sheets": 0,
+                    "total_reservers": 0,
+                    "max_reservers": 0,
+                },
+            )
+            if audit.instance:
+                row["instances"].add(audit.instance)
+            row["sheets"] += 1
+            row["total_reservers"] += len(names)
+            row["max_reservers"] = max(row["max_reservers"], len(names))
+            if len(names) > 1:
+                row["contested_sheets"] += 1
+
+    rows = sorted(
+        agg.values(),
+        key=lambda r: (-r["contested_sheets"], -r["total_reservers"], r["id"]),
+    )
+    for row in rows:
+        row["name"] = item_name(row["id"])
+        row["instances"] = sorted(row["instances"])
+        row["contested"] = row["contested_sheets"] > 0
+
+    return {
+        "items": rows,
+        "sheets_scanned": scanned,
+        "sheets_missing": missing,
+    }, metas
+
+
 def item_name(item_id):
     """Resolve an item ID to its name via Wowhead; None if the lookup fails.
 
